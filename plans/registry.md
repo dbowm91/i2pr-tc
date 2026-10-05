@@ -18,13 +18,13 @@ This is the compact control surface for active planning. Canonical direction is 
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies/blockers |
 |---|---|---|---|---|
-| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M001 ready | M001 has no hard dependency. M002/M003 depend on M001; M004 additionally depends on live i2pr managed-app interfaces; M005 depends on router update invocation/artifact contracts. |
+| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M001 active | M001 is in progress. M002/M003 remain blocked on M001 closure; M004 additionally depends on live i2pr managed-app interfaces; M005 depends on router update invocation/artifact contracts. |
 
 ## Implementation handoffs
 
 | Workstream | Milestone | Status | Plan | Dependency note |
 |---|---|---|---|---|
-| Torrent client | M001 core protocol + storage foundation | **ready** | `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md` | No hard dependency; initial coding handoff. |
+| Torrent client | M001 core protocol + storage foundation | **active** | `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md` | Implementation started; closure evidence and remaining acceptance work are outstanding. |
 | Torrent client | M002 I2P streaming + trackers + magnet metadata + PEX | **blocked** | `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md` | Hard-blocked on M001 closure; recheck current I2P/SAM specs at handoff. |
 | Torrent client | M003 Transmission RPC compatibility | **blocked** | `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md` | Blocked until M001 freezes TorrentService; may then run parallel to M002. |
 | Torrent client | M004 i2pr managed-app integration | **blocked** | `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md` | M002 plus corrected/live i2pr app runtime, SAM gateway, local ingress, and persistent-data contract. |

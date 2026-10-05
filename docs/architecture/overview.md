@@ -1,74 +1,36 @@
 # Architecture Overview
 
-Status: target architecture for the foundational roadmap
+Status: M001 implementation snapshot; later layers remain planned.
 
-## Dependency direction
+## Current crate graph
 
 ```text
-i2pr-tc core
-  - bencode framing + exact info-span capture
-  - metainfo/magnet types
-  - peer wire + extension codecs
-  - torrent state and piece scheduling
+i2pr-tc-core
+  bencode / metainfo / magnets / peer-wire / piece scheduling / TorrentService vocabulary
+          ^
           |
-          v
-i2pr-tc storage
-  - path-safe file layout
-  - random-access piece writes/reads
-  - resume/recheck persistence
-          |
-          v
-i2pr-tc I2P
-  - I2P address types
-  - injected SAM transport/session
-  - HTTP I2P trackers
-  - peer connect/accept
-  - ut_metadata + i2p_pex
-          |
-          v
-TorrentService
-          |
-          +---- TransmissionAdapter
-          +---- managed-app adapter
-          +---- bounded update artifact service
+i2pr-tc-storage
+  authorized-root file operations / piece verification / resume persistence
 ```
 
-Exact crate boundaries may be adjusted during M001 if a smaller split is cleaner, but dependency direction must remain equivalent.
+`i2pr-tc-core` has no network, HTTP, SAM, router, Transmission, or process-execution dependency. `i2pr-tc-storage` depends on core types and performs filesystem I/O only beneath its opened root. There is no binary or production service runtime yet.
 
-## Ownership
+## Ownership boundaries
 
-Core owns deterministic torrent protocol/state, not network sockets.
+Core contains deterministic BitTorrent v1 parsing, domain identifiers, a bounded peer-wire frame decoder, I2P-hash PEX records, and scheduling primitives. The raw encoded `info` dictionary span is SHA-1 hashed directly; it is not reserialized.
 
-Storage owns filesystem I/O beneath an authorized root and never accepts peer paths directly.
+Storage maps validated torrent-relative components below one authorized root. Resume state is versioned and advisory; piece hashes remain authoritative. The initial implementation uses ordinary filesystem operations and checks symlink components; it does not yet provide race-free descriptor-relative operations on every supported platform.
 
-I2P transport owns router protocol adaptation and converts tracker/PEX identity into canonical I2P peer values.
+The native `TorrentService` trait is independent of Transmission naming. `MemoryTorrentService` is a deterministic catalog adapter, not a durable production torrent engine. It intentionally rejects operations it cannot truthfully provide.
 
-TorrentService is the sole mutation/query facade for RPC, managed runtime, and future UI adapters.
+## Planned layers
 
-Transmission compatibility owns no persisted torrent truth. Managed-app adapter owns no torrent algorithms. Update artifact service owns no release trust/installation.
-
-## Concurrency model
-
-Prefer per-torrent actors/tasks plus bounded channels or equivalent ownership making one component authoritative for each torrent's mutable state. Peer tasks report observations/results; they should not mutate shared state through an unbounded graph of locks.
-
-Cancellation propagates service -> torrent -> tracker/peer operations. Restart restores persisted intent/resume state and revalidates files as needed; it does not reconstruct live peer connections.
+M002 will add injected I2P/SAM streaming, HTTP trackers, magnet metadata exchange, and `i2p_pex` integration. M003 will add Transmission compatibility over TorrentService. M004 requires qualified i2pr managed-app SAM, ingress, and persistent-data contracts. M005 requires router-owned ReleaseTarget and staging/export contracts. None of those layers is implemented here.
 
 ## Resource model
 
-Every untrusted count/length is capped before allocation: metainfo bytes, path components/files, piece count/length, peer-wire messages, extension metadata, tracker response/peer count, PEX additions/drops, peer count/in-flight connects, RPC size, and resume-state size.
+Current bounds cover encoded metainfo, bencode nesting/items/strings, file and piece counts, path component lengths, piece length, resume file size at load, peer-wire frame size at decode, PEX record counts, magnet URI/name/tracker bounds, and scheduler in-flight requests. Network and RPC bounds belong to their later milestones.
 
-Operational ceilings may be configurable downward but have validated hard maxima.
+## Verification seams
 
-## Testing seams
-
-Core codecs/state: deterministic unit/property/fuzz tests.
-
-Storage: temp-directory corruption/recheck/restart fixtures.
-
-I2P: scripted SAM/tracker/peer fixtures first; external Java I2P/i2pd interoperability as closure evidence when feasible.
-
-Transmission: golden protocol corpus plus transmission-remote harness.
-
-Managed runtime: capability-channel integration and negative evidence proving no direct-network requirement.
-
-Updates: fake authenticated ReleaseTarget plus malicious/mismatched artifact cases proving transport cannot install.
+Core has deterministic unit fixtures for bencode, raw-info hashing, magnet parsing, peer-wire framing, PEX records, and scheduling. Storage has temporary-directory fixtures for cross-file pieces, recheck, removal, path rejection, and stale resume state. The cargo-fuzz package defines parser and resume targets; corpus seeds and sustained fuzz qualification remain closure work.

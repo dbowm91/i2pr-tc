@@ -1,6 +1,6 @@
 # Torrent Client M001 — Core Protocol and Storage Foundation
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `f9f88bf1ad906f3ce3c0e444d76407eed1a31b66`
 
