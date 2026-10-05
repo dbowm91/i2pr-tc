@@ -41,4 +41,4 @@ Frontend work is deferred until backend/RPC/managed-runtime boundaries are stabl
 Primary upstream:
 `dbowm91/i2pr:codex/plan-345-native-app-runtime`
 
-Current reviewed upstream planning includes ADR 0032, the managed-native-app v1 reference, and Plan 349's contract corrective. Treat those as moving interfaces. Before promoting M004 or M005 to ready, re-review current i2pr head and update the roadmap/plan rather than coding around stale assumptions.
+Latest inspected upstream head: `ea7b5ccef9bacbddf826f074cc59d891849a1424` (2026-10-05). ADR 0032 and the Plan-345 managed-native-app v1 reference exist, but Plan 349 is still **ready**, not closed; its v1 direction/reply, broker reservation, and network-policy corrections are not yet authoritative implementation evidence. The upstream tree contains no torrent-facing ReleaseTarget or artifact staging/export contract. M004 and M005 remain blocked. Re-review the exact upstream head before any later promotion.
