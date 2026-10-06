@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001/M003 closed, historical M002 conditionally closed, M002 C001 closed, C002 closed and integrated to `main`; M004 eligible, M005 blocked
+Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 ready, M004 re-blocked, M005 blocked
 
 Canonical authority:
 
@@ -36,8 +36,10 @@ It does not own i2pr sandboxing, general network policy, router identity, Propos
 8. Cancellation and restart are explicit at every I/O boundary.
 9. Transmission names are not persisted domain authority.
 10. Managed app integration never requires direct host networking.
-11. Raw managed-app SAM streams remain generic router protocol streams; torrent-specific lookup/connect/accept semantics stay application-side.
-12. Torrent update transport cannot install or authenticate releases.
+11. Raw managed-app SAM streams remain generic router protocol streams; torrent-specific operations stay application-side.
+12. One torrent transport generation owns one canonical I2P Destination; peer Streaming and future DHT datagrams must share it.
+13. SAM 3.1 STREAM is a compatibility baseline, not the final torrent transport architecture; the target is SAM 3.3 PRIMARY/subsessions.
+14. Torrent update transport cannot install or authenticate releases.
 
 ## Dependency graph
 
@@ -48,20 +50,26 @@ M001 core protocol/storage (closed)
    |
    +--------> M002 I2P streaming/trackers/PEX (historically conditionally closed)
                  |
-                 +------> C001 SAM/runtime/live-transport corrective (ready)
-                              |\
-                              | +----> C002 foundation branch reconciliation
+                 +------> C001 storage/fingerprint/SAM hardening (closed)
                               |
-                              +------> M004 managed-app integration
-                                          |
-                                          +------> M005 router update transport
+                              +------> C002 integration reconciliation (closed)
+                                           |
+                                           +------> C003 SAM 3.3 shared-Destination corrective (ready)
+                                                        |
+                                                        +-- hard interface dependency:
+                                                        |      i2pr Plan 368 SAM 3.3 PRIMARY/subsessions
+                                                        |
+                                                        +------> M004 managed-app integration
+                                                                    |
+                                                                    +------> M005 router update transport
 
-future M006 datagram trackers/DHT remains deferred
+future M006 I2P DHT/datagram work depends on C003 + i2pr Plan 368
 ```
 
 Historical milestone closure is not rewritten when a corrective is found. C001
-adds forward evidence and determines whether M002's remaining operational
-qualification is satisfied.
+and C002 remain valid evidence for the work they actually closed. C003 corrects
+forward the later-discovered SAM session/identity architecture defect and the
+long-term transport decision needed for I2P DHT.
 
 ## M001 — Core protocol and storage foundation
 
@@ -134,6 +142,34 @@ defects the transcript tests could not, all now fixed; three of its six cases
 still need a registered `.i2p` name, a second peer, and a tracker announce
 URL, which M004 supplies from its integration environment.
 
+## C003 — SAM 3.3 PRIMARY/subsession shared-Destination transport corrective
+
+Status: ready.
+
+Plan:
+`plans/implementation/torrent-client/008-c003-sam33-primary-dht-transport-corrective.md`
+
+Paired upstream:
+`dbowm91/i2pr` Plan 368.
+
+The post-C001 SAM/I2CP review established that the torrent transport must own
+one long-lived I2P Destination and share it across peer/tracker Streaming and
+future DHT datagrams. The current SAM client creates session state in the wrong
+place, exposes a placeholder session-ID-derived local hash, and cannot honestly
+serve as the substrate for I2P DHT.
+
+C003 replaces that shape with SAM 3.3 PRIMARY/subsessions:
+
+- one long-lived primary/control session and real local Destination/hash;
+- STREAM child transport for peers and HTTP trackers;
+- protocol-17/repliable DATAGRAM and protocol-18 RAW children reserved and
+  qualified for future M006 DHT;
+- explicit Java I2P/i2pd compatibility, including PRIMARY/MASTER differences;
+- no torrent-specific I2CP+Streaming implementation.
+
+C003 does not implement KRPC/DHT. Its exit condition is a qualified transport
+substrate over Java I2P, i2pd, and the Plan-368 i2pr private managed-app path.
+
 ## M003 — Transmission RPC compatibility
 
 Status: closed.
@@ -172,31 +208,20 @@ Status: blocked.
 Plan:
 `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`
 
-Current blocker interpretation after the 2026-10-06 upstream recheck and the
-C001/C002 closures:
+M004 is re-blocked by C003 and upstream i2pr Plan 368. It must compose the
+correct shared-Destination SAM 3.3 primary/subsession transport rather than the
+current SAM 3.1 STREAM-only client.
 
-- i2pr Plans 354 and 355 are closed and provide the private raw SAM/I2CP
-  connection seams plus router app-principal capability gateway;
-- C001 is closed: the application-side raw-SAM client, the fingerprint
-  removals, and the transport/storage hardening are implemented. Live-router
-  interoperability has been run against i2pd 2.61.0 and the defects it found
-  are fixed; the three remaining cases need a name, a second peer, and a
-  tracker URL, which is M004's first work package rather than a reason to hold
-  this milestone;
-- AppManager/package/process lifecycle and process authentication remain
-  unregistered/unimplemented upstream;
-- OS sandbox/resource containment remains future work;
-- host-owned local Transmission ingress remains unavailable;
-- private persistent app-data semantics remain unavailable.
+After C003/368 close, the remaining upstream owners are still:
 
-M003's RPC adapter is already closed; its production publication still waits on
-host-owned ingress.
+- AppManager/package/process lifecycle and process authentication;
+- OS sandbox/resource containment;
+- host-owned local Transmission ingress;
+- private persistent app-data semantics, including persistence of the torrent
+  Destination key material.
 
-M004 is therefore the eligible next milestone. Its first work package is the
-three remaining live cases and a production decision on injecting and
-persisting SAM key material — a transient identity is per-connection and cannot
-be dialled — followed by composing `SamConnectionFactory` from the managed
-runtime.
+Plans 354/355 remain closed and provide the raw private SAM/I2CP stream and
+app-principal gateway beneath Plan 368.
 
 ## M005 — Router update artifact transport
 
@@ -219,9 +244,11 @@ owners.
 
 Status: deferred; no handoff plan.
 
-Wait for the streaming/SAM corrective to close, a stable production SAM
-datagram/PRIMARY/subsession contract, and a fresh I2P UDP announce/DHT spec
-review. Do not introduce conventional IP DHT/UDP as an interim substitute.
+Wait for C003 and i2pr Plan 368 to close with a stable, interoperable
+same-Destination STREAM + DATAGRAM + RAW contract. Then perform a fresh I2P
+BitTorrent DHT/KRPC and UDP-tracker review against current I2PSnark and I2P
+specifications. Do not introduce conventional IP DHT/UDP as an interim
+substitute.
 
 ## Verification strategy
 
