@@ -723,8 +723,8 @@ mod tests {
 
     #[async_trait]
     impl I2pSession for FakeSession {
-        fn local_peer_hash(&self) -> [u8; 32] {
-            [9; 32]
+        fn local_peer_hash(&self) -> Result<[u8; 32], TransportError> {
+            Ok([9; 32])
         }
         async fn lookup(&self, name: &str) -> Result<Destination, TransportError> {
             self.looked_up.lock().unwrap().push(name.into());

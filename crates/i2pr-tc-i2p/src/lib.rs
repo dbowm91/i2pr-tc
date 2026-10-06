@@ -1,13 +1,16 @@
-//! I2P-only torrent transport adapters over a router-owned injected session.
+//! I2P-only torrent transport adapters over an application-owned I2P session.
 //!
-//! This crate deliberately has no host-network connector. Managed runtime
-//! composition supplies [`I2pSession`] and owns its SAM/I2CP lifecycle.
+//! This crate deliberately has no host-network connector. The application asks
+//! [`sam::SamConnectionFactory`] for one raw SAM protocol connection at a time
+//! and speaks SAM v3.3 over it, so this crate needs no router or gateway
+//! vocabulary at all: its contract is "exact ordered protocol octets on a
+//! stream this app asked for".
 //!
-//! [`sam`] implements that lifecycle directly: the application asks
-//! [`sam::SamConnectionFactory`] for one raw SAM protocol byte stream and speaks
-//! SAM v3 over it. No router or gateway type is named anywhere in this crate,
-//! because the managed runtime's contract is "exact ordered protocol octets on a
-//! stream this app asked for", which needs no router vocabulary at all.
+//! [`sam::SamClient`] owns the session model SAM 3.3 defines for sharing one
+//! I2P Destination across protocols: one long-lived primary session that owns
+//! the identity and the tunnels, plus the STREAM, DATAGRAM, and RAW child
+//! channels attached to it. See [`sam`] for the qualified wire behaviour and the
+//! ownership rules.
 
 pub mod identity;
 pub mod metadata;
@@ -41,15 +44,27 @@ pub enum TransportError {
     Tracker(String),
     #[error("operation was cancelled")]
     Cancelled,
+    #[error("I2P identity is not established yet")]
+    IdentityNotReady,
+    #[error("I2P session generation is stale: {0}")]
+    Stale(&'static str),
+    #[error("SAM reply reported {0:?}")]
+    SamReply(crate::sam::SamResult),
 }
 
-/// An application-scoped, router-owned I2P session adapter.
+/// An application-owned I2P session over private SAM.
 ///
-/// Implementations map these operations onto an existing private SAM/I2CP
-/// connection. They must not open a host SAM socket or expose router identity.
+/// Implementations map these operations onto the session's own child channels.
+/// They must not open a host SAM socket or expose router identity.
 #[async_trait]
 pub trait I2pSession: Send + Sync {
-    fn local_peer_hash(&self) -> [u8; 32];
+    /// The local Destination hash, as the router has confirmed it.
+    ///
+    /// A session that has not been established yet must return a typed
+    /// not-ready error here rather than a placeholder hash: a derived or
+    /// invented value would be trusted by every consumer that filters itself
+    /// out of PEX, announces, and self-connection checks.
+    fn local_peer_hash(&self) -> Result<[u8; 32], TransportError>;
 
     async fn lookup(&self, name: &str) -> Result<identity::Destination, TransportError>;
 

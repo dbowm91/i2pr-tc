@@ -137,7 +137,9 @@ pub async fn connect_peer<S: I2pSession + ?Sized>(
     .await
     .map_err(|_| PeerError::Transport(TransportError::Timeout))??
     .map_err(PeerError::Transport)?;
-    let local_hash = DestinationHash(session.local_peer_hash());
+    // The router-confirmed hash, or a typed failure: an unestablished session
+    // must not be able to advertise or filter itself with an invented identity.
+    let local_hash = DestinationHash(session.local_peer_hash()?);
     let context = PeerContext {
         runtime: client.runtime,
         id: client.torrent,
@@ -252,7 +254,9 @@ pub async fn serve_incoming<S: I2pSession + ?Sized + 'static>(
         return Err(PeerError::Protocol);
     }
     let mut children = JoinSet::new();
-    let local_hash = DestinationHash(session.local_peer_hash());
+    // The router-confirmed hash, or a typed failure: an unestablished session
+    // must not be able to advertise or filter itself with an invented identity.
+    let local_hash = DestinationHash(session.local_peer_hash()?);
     loop {
         if cancellation.is_cancelled() {
             children.abort_all();
@@ -1061,8 +1065,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::I2pSession for AcceptOnceSession {
-        fn local_peer_hash(&self) -> [u8; 32] {
-            self.hash
+        fn local_peer_hash(&self) -> Result<[u8; 32], TransportError> {
+            Ok(self.hash)
         }
 
         async fn lookup(

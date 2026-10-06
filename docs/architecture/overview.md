@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Status: implementation snapshot through M003/C002; C003 SAM 3.3 transport corrective is active planning authority for the I2P transport.
+Status: implementation snapshot through M003/C002; the C003 SAM 3.3 transport corrective is conditionally closed and is the implementation authority for the I2P transport.
 
 ## Current crate graph
 
@@ -30,10 +30,9 @@ State ownership is per torrent. The runtime catalog lock only locates an owned p
 
 `i2pr-tc-i2p` speaks SAM over caller-supplied raw protocol byte streams through
 `sam::SamConnectionFactory`; no router, gateway, or daemon type is named by the
-crate. The current implementation is retained C001 code, but it is **not** the
-production transport authority after the C003 review.
+crate.
 
-C003 changes the target from a STREAM-only SAM session model to SAM 3.3
+C003 replaced the STREAM-only SAM session model with SAM 3.3
 PRIMARY/subsessions:
 
 ```text
@@ -44,11 +43,24 @@ one primary/control session
        +-> RAW child for future protocol-18 I2P DHT traffic
 ```
 
-The primary control connection must remain alive for the session lifetime.
-STREAM attachment connections must not create unrelated sessions. The real
-router-confirmed local Destination and SHA-256 Destination hash are canonical;
-the existing session-ID-derived placeholder hash is explicitly superseded and
-must disappear under C003.
+The primary control connection remains alive for the session lifetime and is
+owned by a supervisor task that holds no unrelated state. STREAM, DATAGRAM, and
+RAW attachment connections never create sessions: they issue `HELLO` and their
+own command, and attach with `SESSION ADD` on the primary's own control
+connection.
+
+The router-confirmed local Destination and its SHA-256 Destination hash are
+canonical. The session-ID-derived placeholder hash has been deleted, not
+deprecated: `I2pSession::local_peer_hash()` returns a fallible
+`Result<[u8; 32], TransportError>` and reports `IdentityNotReady` until the
+router has confirmed a Destination, so a consumer that filters itself out of
+PEX or refuses a self-connection cannot do so with an invented identity.
+
+The shared-Destination style has two spellings. The specification and Java I2P
+use `STYLE=PRIMARY`; i2pd requires the older `STYLE=MASTER` and rejects the
+current spelling. The client offers the normative spelling first on its own
+fresh connection and records which spelling the service accepted. It never
+probes optimistically with two create commands on one connection.
 
 Tracker announces remain I2P-only and bounded. They carry no `User-Agent`,
 and the peer extension handshake advertises no client version. Magnet metadata
@@ -59,13 +71,16 @@ profile.
 
 ## Not yet implemented
 
-C003 must first correct the SAM lifecycle and identity model and qualify one
-shared Destination across STREAM, DATAGRAM, and RAW. Its production
-qualification is hard-blocked on i2pr Plan 368, which extends i2pr's closed SAM
-3.1 product with the required SAM 3.3 PRIMARY/subsession profile over the
-existing Streaming and protocol-17/protocol-18 data planes.
+C003 corrected the SAM lifecycle and identity model and qualified one shared
+Destination across STREAM, DATAGRAM, and RAW against an in-memory SAM 3.3
+service, with the STREAM child additionally qualified against a live i2pd
+bridge. Its production qualification over the managed-app seam is hard-blocked
+on i2pr Plan 368, which extends i2pr's closed SAM 3.1 product with the required
+SAM 3.3 PRIMARY/subsession profile over the existing Streaming and
+protocol-17/protocol-18 data planes. Plan 368 is registered `ready` upstream and
+not implemented.
 
-M004 remains blocked behind C003/Plan 368 plus AppManager/process ownership, OS
+M004 remains blocked behind Plan 368 plus AppManager/process ownership, OS
 containment, host-owned local ingress, and private persistent-data/key
 semantics.
 

@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 ready, M004 re-blocked, M005 blocked
+Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed, M004 blocked on upstream i2pr Plan 368, M005 blocked
 
 Canonical authority:
 
@@ -54,17 +54,22 @@ M001 core protocol/storage (closed)
                               |
                               +------> C002 integration reconciliation (closed)
                                            |
-                                           +------> C003 SAM 3.3 shared-Destination corrective (ready)
+                                           +------> C003 SAM 3.3 shared-Destination corrective
+                                                        |        (conditionally closed)
                                                         |
-                                                        +-- hard interface dependency:
-                                                        |      i2pr Plan 368 SAM 3.3 PRIMARY/subsessions
-                                                        |
-                                                        +------> M004 managed-app integration
+                              +-- remaining interface dependency:
+                              |      i2pr Plan 368 SAM 3.3 PRIMARY/subsessions
+                              |      (registered ready, not implemented)
+                              v
+                                          +------> M004 managed-app integration
                                                                     |
                                                                     +------> M005 router update transport
 
-future M006 I2P DHT/datagram work depends on C003 + i2pr Plan 368
+future M006 I2P DHT/datagram work depends on i2pr Plan 368
 ```
+
+The C003 edge into M004 is discharged: the shared-Destination transport exists
+and is qualified. What remains on that path is upstream.
 
 Historical milestone closure is not rewritten when a corrective is found. C001
 and C002 remain valid evidence for the work they actually closed. C003 corrects
@@ -139,21 +144,23 @@ inbound transfer qualification passes deterministically. Live-router qualificati
 
 ## C003 — SAM 3.3 PRIMARY/subsession shared-Destination transport corrective
 
-Status: ready.
+Status: conditionally closed.
 
 Plan:
 `plans/implementation/torrent-client/008-c003-sam33-primary-dht-transport-corrective.md`
+
+Closure: `plans/closure/torrent-client/008-c003-status.md`
 
 Paired upstream:
 `dbowm91/i2pr` Plan 368.
 
 The post-C001 SAM/I2CP review established that the torrent transport must own
 one long-lived I2P Destination and share it across peer/tracker Streaming and
-future DHT datagrams. The current SAM client creates session state in the wrong
-place, exposes a placeholder session-ID-derived local hash, and cannot honestly
-serve as the substrate for I2P DHT.
+future DHT datagrams. The SAM client as it stood created session state in the
+wrong place, exposed a placeholder session-ID-derived local hash, and could not
+honestly serve as the substrate for I2P DHT.
 
-C003 replaces that shape with SAM 3.3 PRIMARY/subsessions:
+C003 replaced that shape with SAM 3.3 PRIMARY/subsessions:
 
 - one long-lived primary/control session and real local Destination/hash;
 - STREAM child transport for peers and HTTP trackers;
@@ -162,8 +169,11 @@ C003 replaces that shape with SAM 3.3 PRIMARY/subsessions:
 - explicit Java I2P/i2pd compatibility, including PRIMARY/MASTER differences;
 - no torrent-specific I2CP+Streaming implementation.
 
-C003 does not implement KRPC/DHT. Its exit condition is a qualified transport
-substrate over Java I2P, i2pd, and the Plan-368 i2pr private managed-app path.
+Delivered and qualified against i2pd 2.61.0 over the real bridge. The
+conditional part is upstream: acceptance criterion 8 requires i2pr Plan 368 to
+close so the same matrix can run over the private managed-app SAM seam. Java
+I2P rows and live peer/datagram rows are recorded as unexercised with reasons,
+never as passes. C003 does not implement KRPC/DHT.
 
 ## M003 — Transmission RPC compatibility
 
@@ -203,11 +213,10 @@ Status: blocked.
 Plan:
 `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`
 
-M004 is re-blocked by C003 and upstream i2pr Plan 368. It must compose the
-correct shared-Destination SAM 3.3 primary/subsession transport rather than the
-current SAM 3.1 STREAM-only client.
-
-After C003/368 close, the remaining upstream owners are still:
+M004's C003 dependency is discharged: the shared-Destination SAM 3.3
+primary/subsession transport exists and is qualified, so M004 composes it rather
+than a SAM 3.1 STREAM-only client. M004 stays blocked on upstream i2pr Plan 368
+and the remaining upstream owners:
 
 - AppManager/package/process lifecycle and process authentication;
 - OS sandbox/resource containment;
@@ -239,11 +248,14 @@ owners.
 
 Status: deferred; no handoff plan.
 
-Wait for C003 and i2pr Plan 368 to close with a stable, interoperable
-same-Destination STREAM + DATAGRAM + RAW contract. Then perform a fresh I2P
-BitTorrent DHT/KRPC and UDP-tracker review against current I2PSnark and I2P
-specifications. Do not introduce conventional IP DHT/UDP as an interim
-substitute.
+The qualified same-Destination STREAM + DATAGRAM + RAW contract this needed now
+exists, so an M006 plan can be authored against the shipped transport API. Live
+qualification still waits on i2pr Plan 368, or a later i2pd release that serves
+protocol 17/18 children: i2pd 2.61.0 rejects `SESSION ADD` for datagram styles.
+
+When that gate clears, perform a fresh I2P BitTorrent DHT/KRPC and UDP-tracker
+review against current I2PSnark and I2P specifications. Do not introduce
+conventional IP DHT/UDP as an interim substitute.
 
 ## Verification strategy
 

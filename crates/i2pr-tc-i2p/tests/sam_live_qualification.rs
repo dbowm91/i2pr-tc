@@ -30,9 +30,10 @@
 use i2pr_tc_i2p::{
     I2pSession,
     identity::Destination,
+    sam::SamPrimaryStyle,
     sam::{
-        SamClient, SamConnectionFactory, SamIdentity, SamLimits, SamRawStream,
-        SamSessionDestination, SamTimeouts,
+        SamChannelConfig, SamChannelKind, SamClient, SamConnectionFactory, SamIdentity, SamLimits,
+        SamRawStream, SamSessionDestination, SamTimeouts,
     },
 };
 use sha2::Digest;
@@ -77,6 +78,8 @@ fn timeouts() -> SamTimeouts {
         lookup: Duration::from_secs(60),
         connect: Duration::from_secs(60),
         accept: Duration::from_secs(60),
+        datagram: Duration::from_secs(30),
+        child: Duration::from_secs(60),
         close: Duration::from_secs(5),
     }
 }
@@ -168,14 +171,21 @@ async fn live_session_create_adopts_injected_key_material() {
         factory(),
     );
     let cancellation = i2pr_tc_storage::Cancellation::default();
-    match client.ensure_session(&cancellation).await {
-        Ok(()) => {
-            assert!(client.is_session_created());
+    match client.establish_primary(&cancellation).await {
+        Ok(negotiated) => {
+            assert!(client.has_primary());
+            assert!(
+                client.identity().has_persistent_keys(),
+                "the injected form must stay the persistent one"
+            );
             println!(
                 "live SESSION CREATE ok with injected keys: {} encoded bytes accepted; \
-                 persistent keys={}",
+                 style={:?}; identity={}",
                 keys.len(),
-                client.identity().has_persistent_keys()
+                negotiated.primary_style,
+                hex(&client
+                    .local_destination_hash()
+                    .expect("a confirmed identity"))
             );
         }
         Err(error) => println!("live SESSION CREATE with injected keys reported {error:?}"),
@@ -196,38 +206,43 @@ async fn live_hello_and_session_create_negotiate_with_a_real_router() {
         return;
     }
     let cancellation = i2pr_tc_storage::Cancellation::default();
-    match client.ensure_session(&cancellation).await {
-        Ok(()) => {
-            assert!(client.is_session_created());
-            assert!(client.negotiated_version().is_some());
+    match client.establish_primary(&cancellation).await {
+        Ok(negotiated) => {
+            assert!(client.has_primary());
+            assert_eq!(
+                Some(negotiated),
+                client.negotiated(),
+                "the negotiated profile must be reported from recorded state"
+            );
             println!(
-                "live HELLO/SESSION CREATE ok; version={:?}; DESTINATION={:?}; raw connections opened={}",
-                client.negotiated_version(),
+                "live HELLO + shared-Destination SESSION CREATE ok; version={}; style={:?}; \
+                 DESTINATION={:?}; raw connections opened={}",
+                negotiated.version,
+                negotiated.primary_style,
                 client.session_destination(),
                 opened.load(std::sync::atomic::Ordering::SeqCst)
             );
         }
         Err(error) => {
             println!(
-                "live HELLO/SESSION CREATE reported {error:?} from {}",
+                "live HELLO + shared-Destination SESSION CREATE reported {error:?} from {}",
                 sam_address()
             );
         }
     }
 }
 
-/// The one live case that needs no external input at all.
+/// The shared-Destination style vocabulary, qualified against a real service.
 ///
-/// `NAME=ME` is a SAM v3 reserved name that a service resolves to the calling
-/// session's own Destination, so this exercises the full path that matters for
-/// interoperability — command encoding, reply parsing, and decoding a real
-/// Destination out of a real service's base64 — without needing a second peer,
-/// a hostname, or a tracker.
+/// The current specification spells it `PRIMARY`; i2pd keeps the older `MASTER`
+/// spelling. This client offers the normative spelling first on its own fresh
+/// connection and falls back only when the service rejects it, so what this
+/// prints is exactly which spelling the deployed router understands.
 #[tokio::test]
-async fn live_session_resolves_its_own_destination_without_any_external_input() {
+async fn live_shared_destination_style_is_qualified_against_a_real_router() {
     let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let client = client(
-        "name-me",
+        "style",
         LocalSamFactory {
             address: sam_address(),
             opened: std::sync::Arc::clone(&opened),
@@ -236,44 +251,128 @@ async fn live_session_resolves_its_own_destination_without_any_external_input() 
     if !environment_report().await {
         return;
     }
-    let session: &dyn I2pSession = &client;
-    match session.lookup("ME").await {
-        Ok(destination) => {
-            // A Destination this client would accept as diallable, with the
-            // hash a peer would actually be keyed by, decoded intact from a
-            // real service's base64.
-            assert_eq!(destination.hash().len(), 32);
-            let expected: [u8; 32] = sha2::Sha256::digest(destination.as_bytes()).into();
+    let cancellation = i2pr_tc_storage::Cancellation::default();
+    match client.establish_primary(&cancellation).await {
+        Ok(negotiated) => {
+            let connections = opened.load(std::sync::atomic::Ordering::SeqCst);
+            println!(
+                "live shared-Destination profile: version={}; accepted style={:?}; \
+                 raw connections opened={connections}",
+                negotiated.version, negotiated.primary_style
+            );
+            // One create per connection: a rejected spelling is never retried on
+            // the connection that rejected it.
+            assert!(
+                connections <= 2,
+                "at most one attempt per shared-Destination spelling"
+            );
             assert_eq!(
-                destination.hash(),
-                expected,
-                "the reported hash must be the digest of the returned bytes"
-            );
-            println!(
-                "live NAME=ME ok: {}-byte Destination, hash={}",
-                destination.as_bytes().len(),
-                hex(&destination.hash())
-            );
-            // Each lookup runs on its own raw connection, and this client asks
-            // for a transient identity, so a second connection is expected to
-            // come back with a different one. Recording that is the point:
-            // identity only survives a connection when private keys are
-            // injected, which is why this harness never asserts stability.
-            let again = session
-                .lookup("ME")
-                .await
-                .expect("a second NAME=ME over a fresh raw connection");
-            println!(
-                "live NAME=ME repeat ok: second connection hash={} ({} the first)",
-                hex(&again.hash()),
-                if again.hash() == destination.hash() {
-                    "equal to"
+                connections,
+                if negotiated.primary_style == SamPrimaryStyle::Primary {
+                    1
                 } else {
-                    "different from"
+                    2
                 }
             );
         }
-        Err(error) => println!("live NAME=ME reported {error:?}"),
+        Err(error) => println!("live shared-Destination profile reported {error:?}"),
+    }
+}
+
+/// The child channels a real service will and will not attach.
+///
+/// i2pd 2.61.0 answers `SESSION ADD` with `STYLE=DATAGRAM` or `STYLE=RAW` with
+/// `Unsupported STYLE`, so this reports each channel's own result instead of
+/// asserting one: the STREAM child is the transport torrent data needs today,
+/// and the datagram forms are the substrate the next milestone needs from a
+/// router that implements them.
+#[tokio::test]
+async fn live_child_channel_styles_are_qualified_against_a_real_router() {
+    let client = client(
+        "children",
+        LocalSamFactory {
+            address: sam_address(),
+            opened: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        },
+    );
+    if !environment_report().await {
+        return;
+    }
+    let cancellation = i2pr_tc_storage::Cancellation::default();
+    if let Err(error) = client.establish_primary(&cancellation).await {
+        println!("live child channels SKIPPED: no shared-Destination session ({error:?})");
+        return;
+    }
+    let ports = SamChannelConfig {
+        from_port: 30927,
+        to_port: 30928,
+        listen_port: 30929,
+    };
+    for (kind, config) in [
+        (SamChannelKind::Stream, SamChannelConfig::STREAM),
+        (SamChannelKind::RepliableDatagram, ports),
+        (SamChannelKind::RawDatagram, ports),
+    ] {
+        match client.add_channel(kind, config, &cancellation).await {
+            Ok(channel) => {
+                println!(
+                    "live SESSION ADD ok for {kind:?}: id={} protocol={}",
+                    channel.id(),
+                    kind.protocol()
+                );
+                match client.remove_channel(&channel, &cancellation).await {
+                    Ok(()) => println!("live SESSION REMOVE ok for {}", channel.id()),
+                    Err(error) => println!(
+                        "live SESSION REMOVE for {} reported {error:?}",
+                        channel.id()
+                    ),
+                }
+            }
+            Err(error) => println!("live SESSION ADD for {kind:?} reported {error:?}"),
+        }
+    }
+}
+
+/// The router-confirmed local identity, qualified against a real service.
+///
+/// This is the case that matters most for correctness downstream: PEX
+/// self-filtering, tracker announces, and self-connection rejection all key on
+/// this hash, so it must be the digest of the Destination the router actually
+/// bound to the session.
+#[tokio::test]
+async fn live_primary_identity_is_the_router_confirmed_destination() {
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let client = client(
+        "identity",
+        LocalSamFactory {
+            address: sam_address(),
+            opened: std::sync::Arc::clone(&opened),
+        },
+    );
+    if !environment_report().await {
+        return;
+    }
+    let cancellation = i2pr_tc_storage::Cancellation::default();
+    if let Err(error) = client.establish_primary(&cancellation).await {
+        println!("live local identity SKIPPED: no shared-Destination session ({error:?})");
+        return;
+    }
+    match client.local_identity() {
+        Ok(identity) => {
+            let expected: [u8; 32] = sha2::Sha256::digest(identity.destination().as_bytes()).into();
+            assert_eq!(identity.hash(), expected);
+            assert_eq!(
+                I2pSession::local_peer_hash(&client).expect("typed hash"),
+                expected
+            );
+            println!(
+                "live local identity ok: {}-byte Destination, hash={}, session={}",
+                identity.destination().as_bytes().len(),
+                hex(&identity.hash()),
+                client.session_id()
+            );
+        }
+        Err(error) => println!("live local identity reported {error:?}"),
     }
 }
 
@@ -297,6 +396,13 @@ async fn live_naming_lookup_resolves_a_real_name() {
         );
         return;
     };
+    if let Err(error) = client
+        .establish_primary(&i2pr_tc_storage::Cancellation::default())
+        .await
+    {
+        println!("live NAMING LOOKUP SKIPPED: no shared-Destination session ({error:?})");
+        return;
+    }
     let session: &dyn I2pSession = &client;
     match session.lookup(&name).await {
         Ok(destination) => println!(
@@ -328,8 +434,18 @@ async fn live_stream_connect_and_accept_carry_real_traffic() {
         return;
     };
     let cancellation = i2pr_tc_storage::Cancellation::default();
+    let channel = match client.stream_channel(&cancellation).await {
+        Ok(channel) => channel,
+        Err(error) => {
+            println!("live STREAM CONNECT SKIPPED: no STREAM child channel ({error:?})");
+            return;
+        }
+    };
     // `port = 0` is what the peer path passes; it must still reach the router.
-    match client.stream_connect(&peer, 0, &cancellation).await {
+    match client
+        .stream_connect(&channel, &peer, 0, &cancellation)
+        .await
+    {
         Ok(mut stream) => {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             if let Err(error) = stream.write_all(b"live-qualification").await {
