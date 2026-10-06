@@ -15,10 +15,12 @@
 | Diff from merge base | 227 files changed, 18387 insertions, 4 deletions |
 | Integration mode | fast-forward; `main` had gained no work of its own |
 | Post-integration `main` SHA | `624f11d3d400cc71a0243b821260433ac9bb8859` |
+| This closure record | committed on `main` on top of that SHA, as the only commit after the fast-forward |
 
 `main` at the merge base was bootstrap only: no crate source, no CI workflow,
 no `rust-toolchain.toml`. The whole implementation line therefore lands as one
-fast-forward with no reconciliation needed.
+fast-forward with no reconciliation needed. The only commit on `main` after the
+fast-forward is this closure record.
 
 ## 2. C001 closure reference
 
