@@ -106,6 +106,9 @@ impl PieceMap {
                 }
             }
         }
+        self.cancel_peer_requests(peer);
+    }
+    pub fn cancel_peer_requests(&mut self, peer: [u8; 32]) {
         self.inflight.retain(|(_, _, p)| *p != peer);
         for (i, s) in self.states.iter_mut().enumerate() {
             if *s == PieceStatus::InFlight && !self.inflight.iter().any(|(p, _, _)| *p == i as u32)

@@ -22,6 +22,7 @@ pub mod runtime;
 pub use runtime::TorrentRuntime;
 
 const MAX_RESUME_PIECES: usize = 4_000_000;
+const MAX_RESUME_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PIECE_LENGTH: u32 = 16 * 1024 * 1024;
 static RESUME_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -276,6 +277,41 @@ impl Storage {
         self.read_piece_unlocked(files, piece_length, index, len)
     }
 
+    pub fn read_block(
+        &self,
+        files: &[TorrentFile],
+        piece_length: u32,
+        index: u32,
+        begin: u32,
+        len: usize,
+    ) -> Result<Vec<u8>, StorageError> {
+        if piece_length == 0 || piece_length > MAX_PIECE_LENGTH || len == 0 {
+            return Err(StorageError::Layout);
+        }
+        let piece_offset = (index as u64)
+            .checked_mul(piece_length as u64)
+            .ok_or(StorageError::Overflow)?;
+        let total = files
+            .iter()
+            .try_fold(0u64, |n, file| n.checked_add(file.length))
+            .ok_or(StorageError::Overflow)?;
+        if piece_offset >= total {
+            return Err(StorageError::Layout);
+        }
+        let piece_size = (total - piece_offset).min(piece_length as u64);
+        let end = (begin as u64)
+            .checked_add(len as u64)
+            .ok_or(StorageError::Overflow)?;
+        if end > piece_size {
+            return Err(StorageError::Layout);
+        }
+        let offset = piece_offset
+            .checked_add(begin as u64)
+            .ok_or(StorageError::Overflow)?;
+        let _permit = self.disk.lock().map_err(|_| StorageError::Concurrency)?;
+        self.read_range_unlocked(files, offset, len)
+    }
+
     fn read_piece_unlocked(
         &self,
         files: &[TorrentFile],
@@ -292,6 +328,15 @@ impl Storage {
         let offset = (index as u64)
             .checked_mul(piece_length as u64)
             .ok_or(StorageError::Overflow)?;
+        self.read_range_unlocked(files, offset, len)
+    }
+
+    fn read_range_unlocked(
+        &self,
+        files: &[TorrentFile],
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, StorageError> {
         let mut global = offset;
         let mut out = vec![0; len];
         let mut done = 0;
@@ -408,6 +453,9 @@ impl Storage {
         self.reject_symlink_ancestors(&path)?;
         let mut bytes = Vec::new();
         serde_json::to_writer(&mut bytes, resume).map_err(|_| StorageError::Resume)?;
+        if bytes.len() > MAX_RESUME_BYTES {
+            return Err(StorageError::Resume);
+        }
         atomic_write(&path, &bytes)
     }
 
@@ -426,6 +474,7 @@ impl Storage {
         let path = self.safe_path(&[".resume".into(), name])?;
         self.reject_symlink_ancestors(&path)?;
         let file = File::open(path)?;
+        let max_bytes = max_bytes.min(MAX_RESUME_BYTES as u64);
         if file.metadata()?.len() > max_bytes {
             return Err(StorageError::Resume);
         }
@@ -461,9 +510,77 @@ pub struct ResumeState {
     pub info_hash: [u8; 20],
     pub storage_schema: u32,
     pub desired_running: bool,
+    #[serde(with = "bool_bitmap")]
     pub verified: Vec<bool>,
     pub downloaded: u64,
     pub uploaded: u64,
+}
+
+mod bool_bitmap {
+    use super::MAX_RESUME_PIECES;
+    use serde::{de, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(bits: &[bool], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut compact = String::with_capacity(bits.len());
+        compact.extend(bits.iter().map(|bit| if *bit { '1' } else { '0' }));
+        compact.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<bool>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BitmapVisitor;
+        impl<'de> de::Visitor<'de> for BitmapVisitor {
+            type Value = Vec<bool>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bounded bit string or legacy boolean array")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.len() > MAX_RESUME_PIECES {
+                    return Err(E::custom("resume bitmap exceeds piece limit"));
+                }
+                value
+                    .bytes()
+                    .map(|bit| match bit {
+                        b'0' => Ok(false),
+                        b'1' => Ok(true),
+                        _ => Err(E::custom("invalid resume bitmap")),
+                    })
+                    .collect()
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut bits = Vec::new();
+                while let Some(bit) = seq.next_element::<bool>()? {
+                    if bits.len() >= MAX_RESUME_PIECES {
+                        return Err(de::Error::custom("resume bitmap exceeds piece limit"));
+                    }
+                    bits.push(bit);
+                }
+                Ok(bits)
+            }
+        }
+        deserializer.deserialize_any(BitmapVisitor)
+    }
 }
 impl ResumeState {
     pub fn validate(
@@ -574,6 +691,8 @@ mod tests {
         s.write_verified_piece(&files, 4, 1, b"ef", second_hash)
             .unwrap();
         assert_eq!(s.read_piece(&files, 4, 0, 4).unwrap(), b"abcd");
+        assert_eq!(s.read_block(&files, 4, 0, 2, 2).unwrap(), b"cd");
+        assert!(s.read_block(&files, 4, 1, 1, 2).is_err());
         let hashes: [[u8; 20]; 2] = [Sha1::digest(b"abcd").into(), Sha1::digest(b"ef").into()];
         assert_eq!(s.recheck(&files, 4, &hashes).unwrap(), vec![true, true]);
         s.remove_data(&files).unwrap();
@@ -682,6 +801,38 @@ mod tests {
     }
 
     #[test]
+    fn resume_bitmaps_use_compact_strings_and_accept_legacy_boolean_arrays() {
+        let state = ResumeState {
+            version: 1,
+            info_hash: [3; 20],
+            storage_schema: 1,
+            desired_running: true,
+            verified: vec![true, false, true],
+            downloaded: 0,
+            uploaded: 0,
+        };
+        let compact = serde_json::to_string(&state).unwrap();
+        assert!(compact.contains("\"verified\":\"101\""));
+        assert_eq!(
+            serde_json::from_str::<ResumeState>(&compact)
+                .unwrap()
+                .verified,
+            state.verified
+        );
+
+        let legacy = format!(
+            "{{\"version\":1,\"info_hash\":{},\"storage_schema\":1,\"desired_running\":true,\"verified\":[true,false,true],\"downloaded\":0,\"uploaded\":0}}",
+            serde_json::to_string(&state.info_hash).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_str::<ResumeState>(&legacy)
+                .unwrap()
+                .verified,
+            state.verified
+        );
+    }
+
+    #[test]
     fn rejects_cross_platform_dangerous_path_components() {
         let root = temp_root();
         let storage = Storage::open(&root).unwrap();
@@ -696,6 +847,27 @@ mod tests {
                 "accepted dangerous component {component:?}"
             );
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepare_rejects_existing_short_and_long_files() {
+        let root = temp_root();
+        let storage = Storage::open(&root).unwrap();
+        let file = TorrentFile {
+            path: vec!["payload".into()],
+            length: 4,
+        };
+        fs::write(root.join("payload"), b"abc").unwrap();
+        assert!(matches!(
+            storage.prepare(std::slice::from_ref(&file)),
+            Err(StorageError::Layout)
+        ));
+        fs::write(root.join("payload"), b"abcde").unwrap();
+        assert!(matches!(
+            storage.prepare(&[file]),
+            Err(StorageError::Layout)
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

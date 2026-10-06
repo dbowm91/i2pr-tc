@@ -43,7 +43,7 @@ pub struct TorrentSnapshot {
     pub download_limit: Option<u64>,
     pub upload_limit: Option<u64>,
     pub file_priorities: Vec<FilePriority>,
-    #[serde(default)]
+    #[serde(skip)]
     pub verified_pieces: Vec<bool>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

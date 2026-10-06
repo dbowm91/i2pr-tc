@@ -12,6 +12,8 @@ This record captures the implementation checkpoint on `codex/planning-foundation
 - `edfc7d6` — corrected peer availability replacement and multi-block in-flight ownership.
 - `a1ad537` — added bounded incremental peer framing and hash-checked storage writes.
 - `15c1002` — added durable service state, bounded events/priorities, resume-root safety, cancellation, metadata bounds, boundary guards, and fuzz corpora.
+- `73cbc38` — made persistent progress depend on hash-verified storage writes and recovery-derived piece verification.
+- `a2d32af` — composed `PieceMap`, bounded block assembly, storage writes, startup recovery, and runtime fixtures; retained fuzz discoveries.
 
 ## Landed scope
 
@@ -33,7 +35,7 @@ Passed:
 
 - `rtk proxy cargo fmt --all -- --check`
 - `rtk proxy cargo fmt --manifest-path fuzz/Cargo.toml -- --check`
-- `rtk proxy cargo test --workspace --all-targets --locked` — 34 tests passed (21 core, 13 storage)
+- `rtk proxy cargo test --workspace --all-targets --locked` — 44 tests passed (25 core, 19 storage)
 - `rtk proxy cargo check --workspace --all-targets --locked`
 - `rtk proxy cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - `RUSTDOCFLAGS='-D warnings' rtk proxy cargo doc --workspace --no-deps --locked`
@@ -42,7 +44,7 @@ Passed:
 - `rtk proxy cargo deny check` — all categories pass with duplicate `syn` and unused license allowance warnings
 - `rtk proxy git diff --check`
 
-Latest runtime checkpoint adds two regression fixtures for requested-block ownership, out-of-order assembly, hash-checked storage, restart recheck, and rejection of unrequested/incorrectly sized blocks. Re-run the full command set above before closure; this checkpoint currently has 36 workspace tests (21 core, 15 storage).
+Latest core protocol/storage checkpoint adds typed peer-wire state and frame encoding, strict known-message framing with decoder reset after malformed frames, compact bounded resume bitmaps with legacy decoding, large catalog bitmap coverage, short/long file-size rejection, and peer-wire/runtime integration for handshakes, bitfields, requests, pieces, uploads, choke cancellation, and storage progress. Catalog metainfo reads are also byte-bounded. The runtime adds lifecycle invalidation for outstanding blocks. Final verification after these changes: 47 tests pass (26 core, 21 storage); Rust 1.81 workspace/all-targets check succeeds with that toolchain's existing `cfg(test)` warnings; all five fuzz targets completed 100 runs; `cargo deny` passed with existing duplicate-`syn` and unused license-allowance warnings.
 
 Fuzz smoke:
 
@@ -52,8 +54,8 @@ Fuzz smoke:
 ## Unresolved acceptance work
 
 - Compose `PieceMap`, verified storage, service snapshots, and completion callbacks under one authoritative torrent runtime owner.
-- Implement the production peer-wire state machine and integrate its choke/request/piece transitions with the runtime owner.
-- Complete crash interruption, cancellation during active multi-file writes/recheck, stable-ID collision, corrupt/short/long file, broad parser/peer-wire fixture matrices, and invalid-piece redownload coverage.
+- Integrate `PeerWireSession` lifecycle and choke/request/piece events directly with `TorrentRuntime` and add transport-fake end-to-end state transition fixtures.
+- Complete crash interruption, cancellation during active multi-file writes/recheck, stable-ID collision, broader malformed parser/peer-wire matrices, and invalid-piece redownload/peer ownership coverage.
 - Complete crash interruption, cancellation during active multi-file writes/recheck, stable-ID collision, corrupt/short/long file, and broad peer-wire fixture matrices.
 - Wire the dependency guard into CI and qualify platform-specific filesystem guarantees; ordinary path checks still have TOCTOU limits.
 - Run longer fuzz campaigns and retain their evidence.
@@ -68,7 +70,7 @@ M002 remains blocked on full M001 closure. M003 remains blocked because the Torr
 
 The initial upstream check recorded below was superseded by a fresh 2026-10-06 inspection of `main` at `2f82c7998fc9f43c6f94843b58faa0b0fdc9c2e4` and the runtime branch at `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Plans 349 and 352–355 close corrected v1 policy and the private SAM/I2CP gateway. That removes the prior gateway-contract blocker, but upstream explicitly has no AppManager/package/process plan; process authentication, package lifecycle, and sandbox remain unimplemented. The upstream tree also contains no router-owned ReleaseTarget or artifact staging/export contract. M004 remains blocked on M002 and the missing app-runtime contract; M005 remains blocked on M002/M004 and update handoff interfaces.
 
-Since commit `d5b4539`, M001 scheduler work replaced additive peer availability with peer-keyed replacement/withdrawal and keeps a piece in-flight until all outstanding blocks complete. The bounded peer-wire decoder handles fragmented/coalesced frames and rejects oversized announced lengths before payload accumulation. Storage verifies exact-size piece bytes before writes; serialized disk access can be cancelled between files/pieces. Resume files stay under the authorized root, are byte-bounded while loading, and use unique atomic temporary files. Metainfo rejects duplicate and file/directory-colliding paths, retains bounded announce tiers, and rejects cross-platform reserved names. The service exposes bounded events, priorities and limits; its durable catalog restores desired-running torrents as `Starting`, returns completed torrents to `Checking`, and clears verified-piece claims. Magnet metadata promotion preserves the torrent ID and exposes resolved metainfo. Persistent service piece ingestion writes hash-verified bytes before advancing durable progress, while recovery rechecks stored files and rebuilds the progress bitmap. The new `TorrentRuntime` bounds peer requests and buffered assembly data, owns `PieceMap` transitions, assembles out-of-order blocks, stores only full hash-valid pieces, and performs recheck during open before exposing schedulable state. Payload removal is wired for metainfo-backed torrents. The current workspace suite passes (36 total), with previous checkpoint evidence for Clippy, rustdoc, five fuzz-target compilation and smoke runs, the mutation-tested foundation boundary guard, and `git diff --check`; rerun all gates against the runtime change before closure. Production peer-wire state transitions and the outstanding fault/security matrix remain; M001 stays active.
+Since commit `d5b4539`, M001 scheduler work replaced additive peer availability with peer-keyed replacement/withdrawal and keeps a piece in-flight until all outstanding blocks complete. The bounded peer-wire decoder handles fragmented/coalesced frames, rejects oversized announced lengths before payload accumulation, resets after malformed known frames, and bounds messages per feed; typed peer-wire state validates infohash handshakes, bitfield size/padding, choke-gated requests, and matching piece responses, and frame encoding is bounded. `TorrentRuntime` binds that state to I2P-sized peer identity keys, updates scheduler availability, cancels requests on choke/disconnect, routes piece blocks through bounded assembly and verified storage, and serves upload blocks only from verified pieces. Storage verifies exact-size piece bytes before writes; serialized disk access can be cancelled between files/pieces. Resume files stay under the authorized root, are byte-bounded on read and write, use compact bitmaps with legacy decoding, and use unique atomic temporary files. Metainfo rejects duplicate and file/directory-colliding paths, retains bounded announce tiers, and rejects cross-platform reserved names. The service exposes bounded events, priorities and limits; its durable catalog restores desired-running torrents as `Starting`, returns completed torrents to `Checking`, and clears verified-piece claims. Magnet metadata promotion preserves the torrent ID and exposes resolved metainfo. Persistent service recovery rechecks stored files and rebuilds the progress bitmap. Existing short/long payload files are rejected; large piece bitmaps no longer bloat catalog records. The current workspace suite passes (47 total), Clippy with warnings denied, rustdoc, fuzz-target compilation and 100-run smoke for each of five targets, Rust 1.81 check, the mutation-tested foundation boundary guard, and `git diff --check`. Crash/cancellation edge qualification, longer fuzz campaigns, and race-free descriptor-relative filesystem guarantees remain; M001 stays active.
 
 ## Closure recommendation
 

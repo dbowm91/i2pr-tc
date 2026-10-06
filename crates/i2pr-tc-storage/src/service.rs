@@ -25,6 +25,7 @@ use std::{
 
 const MAX_CATALOG_RECORDS: usize = 100_000;
 const MAX_MAGNET_BYTES: usize = 4096;
+const MAX_CATALOG_RECORD_BYTES: usize = 2 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,7 +77,7 @@ impl PersistentTorrentService {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(StorageError::Path);
             }
-            if metadata.len() > 16 * 1024 {
+            if metadata.len() > MAX_CATALOG_RECORD_BYTES as u64 {
                 return Err(StorageError::Resume);
             }
             if records.len() >= MAX_CATALOG_RECORDS {
@@ -84,9 +85,9 @@ impl PersistentTorrentService {
             }
             let mut bytes = Vec::with_capacity(metadata.len() as usize);
             File::open(&path)?
-                .take(16 * 1024 + 1)
+                .take(MAX_CATALOG_RECORD_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)?;
-            if bytes.len() > 16 * 1024 {
+            if bytes.len() > MAX_CATALOG_RECORD_BYTES {
                 return Err(StorageError::Resume);
             }
             let mut record: Record =
@@ -109,7 +110,8 @@ impl PersistentTorrentService {
                     {
                         return Err(StorageError::Resume);
                     }
-                    let meta = fs::read(&meta_path)?;
+                    let meta =
+                        read_bounded_file(&meta_path, metainfo::MetaLimits::default().encoded)?;
                     let parsed = metainfo::parse(&meta, Default::default())
                         .map_err(|_| StorageError::Resume)?;
                     if parsed.info_hash.0 != record.snapshot.info_hash
@@ -133,7 +135,9 @@ impl PersistentTorrentService {
             match &record.source {
                 Source::Metainfo => {
                     let meta_path = metainfo_path(&directory, id);
-                    let parsed = metainfo::parse(&fs::read(meta_path)?, Default::default())
+                    let meta =
+                        read_bounded_file(&meta_path, metainfo::MetaLimits::default().encoded)?;
+                    let parsed = metainfo::parse(&meta, Default::default())
                         .map_err(|_| StorageError::Resume)?;
                     if (record.snapshot.verified_pieces.len() != parsed.piece_hashes.len()
                         && !record.snapshot.verified_pieces.is_empty())
@@ -646,7 +650,7 @@ fn metainfo_path(directory: &Path, id: TorrentId) -> PathBuf {
 }
 
 impl PersistentTorrentService {
-    fn payload_root(&self, id: TorrentId) -> PathBuf {
+    pub(crate) fn payload_root(&self, id: TorrentId) -> PathBuf {
         self.root.join("downloads").join(format!("{:032x}", id.0))
     }
 
@@ -661,10 +665,17 @@ impl PersistentTorrentService {
         if self.get(id)?.status != TorrentStatus::Checking {
             <Self as TorrentService>::command(self, TorrentCommand::Verify(id))?;
         }
-        let payload = Storage::open(self.payload_root(id)).map_err(|_| ServiceError::Storage)?;
-        payload
-            .prepare(&meta.files)
-            .map_err(|_| ServiceError::Storage)?;
+        let payload = match Storage::open(self.payload_root(id)) {
+            Ok(payload) => payload,
+            Err(_) => {
+                let _ = <Self as TorrentService>::cancel_verification(self, id);
+                return Err(ServiceError::Storage);
+            }
+        };
+        if payload.prepare(&meta.files).is_err() {
+            let _ = <Self as TorrentService>::cancel_verification(self, id);
+            return Err(ServiceError::Storage);
+        }
         let verified = match payload.recheck_cancellable(
             &meta.files,
             meta.piece_length,
@@ -681,24 +692,30 @@ impl PersistentTorrentService {
                 return Err(ServiceError::Storage);
             }
         };
-        for (index, good) in verified.iter().enumerate() {
-            if *good {
-                let offset = (index as u64)
-                    .checked_mul(meta.piece_length as u64)
-                    .ok_or(ServiceError::Storage)?;
-                let length = (meta.total_length - offset).min(meta.piece_length as u64);
-                let bytes = payload
-                    .read_piece(
-                        &meta.files,
-                        meta.piece_length,
-                        index as u32,
-                        length as usize,
-                    )
-                    .map_err(|_| ServiceError::Storage)?;
-                <Self as TorrentService>::store_verified_piece(self, id, index as u32, &bytes)?;
+        let restoration = (|| {
+            for (index, good) in verified.iter().enumerate() {
+                if *good {
+                    let offset = (index as u64)
+                        .checked_mul(meta.piece_length as u64)
+                        .ok_or(ServiceError::Storage)?;
+                    let length = (meta.total_length - offset).min(meta.piece_length as u64);
+                    let bytes = payload
+                        .read_piece(
+                            &meta.files,
+                            meta.piece_length,
+                            index as u32,
+                            length as usize,
+                        )
+                        .map_err(|_| ServiceError::Storage)?;
+                    <Self as TorrentService>::store_verified_piece(self, id, index as u32, &bytes)?;
+                }
             }
+            Ok::<(), ServiceError>(())
+        })();
+        if let Err(error) = restoration {
+            let _ = <Self as TorrentService>::cancel_verification(self, id);
+            return Err(error);
         }
-        self.finish_recheck(id)?;
         let snapshot = self.get(id)?;
         let resume = ResumeState {
             version: 1,
@@ -715,6 +732,7 @@ impl PersistentTorrentService {
                 let _ = <Self as TorrentService>::cancel_verification(self, id);
                 ServiceError::Storage
             })?;
+        self.finish_recheck(id)?;
         Ok(verified)
     }
 
@@ -747,10 +765,23 @@ impl PersistentTorrentService {
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), StorageError> {
     let mut bytes = Vec::new();
     serde_json::to_writer(&mut bytes, value).map_err(|_| StorageError::Resume)?;
-    if bytes.len() > 16 * 1024 {
+    if bytes.len() > MAX_CATALOG_RECORD_BYTES {
         return Err(StorageError::Resume);
     }
     atomic_write(path, &bytes)
+}
+
+fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StorageError> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(16 * 1024));
+    let limit = u64::try_from(max_bytes)
+        .map_err(|_| StorageError::Resume)?
+        .checked_add(1)
+        .ok_or(StorageError::Resume)?;
+    File::open(path)?.take(limit).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(StorageError::Resume);
+    }
+    Ok(bytes)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
@@ -934,6 +965,28 @@ mod tests {
             service.get(id).unwrap().file_priorities,
             [FilePriority::Normal]
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn large_piece_bitmaps_are_rebuilt_instead_of_bloating_catalog_records() {
+        let root = root();
+        let count = 10_000usize;
+        let piece_hashes = vec![0; count * 20];
+        let mut bytes = format!(
+            "d4:infod6:lengthi{count}e4:name1:x12:piece lengthi1e6:pieces{}:",
+            piece_hashes.len()
+        )
+        .into_bytes();
+        bytes.extend_from_slice(&piece_hashes);
+        bytes.extend_from_slice(b"ee");
+        let service = PersistentTorrentService::open(&root).unwrap();
+        let id = service.add_metainfo(&bytes).unwrap();
+        assert_eq!(service.get(id).unwrap().verified_pieces.len(), count);
+        drop(service);
+
+        let service = PersistentTorrentService::open(&root).unwrap();
+        assert_eq!(service.get(id).unwrap().verified_pieces, vec![false; count]);
         let _ = fs::remove_dir_all(root);
     }
 

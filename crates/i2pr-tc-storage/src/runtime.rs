@@ -1,8 +1,11 @@
 //! Single-owner composition of peer block scheduling, verified storage, and service progress.
-use crate::{Cancellation, PersistentTorrentService};
+use crate::{Cancellation, PersistentTorrentService, Storage};
 use i2pr_tc_core::{
-    service::{ServiceError, TorrentId, TorrentService, TorrentStatus},
+    magnet, metainfo,
+    metainfo::InfoHashV1,
+    service::{ServiceError, TorrentCommand, TorrentId, TorrentService, TorrentStatus},
     state::{BlockRequest, PieceMap, PieceStatus, ScheduleError},
+    wire::{Handshake, Message, PeerEvent, PeerWireSession},
 };
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
 
@@ -17,6 +20,14 @@ struct TorrentRuntimeState {
     requests: BTreeMap<(u32, u32, [u8; 32]), BlockRequest>,
     blocks: BTreeMap<u32, Vec<(u32, Vec<u8>)>>,
     buffered_bytes: usize,
+    peers: BTreeMap<[u8; 32], PeerWireSession>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerMessageOutcome {
+    pub event: PeerEvent,
+    pub cancellations: Vec<Message>,
+    pub completed_piece: Option<bool>,
 }
 
 /// Owns scheduler and storage transitions for one persistent torrent catalog.
@@ -88,6 +99,7 @@ impl TorrentRuntime {
                     requests: BTreeMap::new(),
                     blocks: BTreeMap::new(),
                     buffered_bytes: 0,
+                    peers: BTreeMap::new(),
                 },
             );
         }
@@ -104,15 +116,36 @@ impl TorrentRuntime {
         &self.service
     }
 
+    /// Route lifecycle commands through the runtime so stop, verify, and remove also
+    /// invalidate scheduler ownership and buffered blocks.
+    pub fn command(&self, command: TorrentCommand) -> Result<(), ServiceError> {
+        self.service.command(command.clone())?;
+        match command {
+            TorrentCommand::Stop(id) | TorrentCommand::Verify(id) => self.register(id),
+            TorrentCommand::Remove { id, .. } => {
+                self.torrents
+                    .lock()
+                    .map_err(|_| ServiceError::Storage)?
+                    .remove(&id);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn add_metainfo(&self, bytes: &[u8]) -> Result<TorrentId, ServiceError> {
-        self.ensure_capacity()?;
+        let meta =
+            metainfo::parse(bytes, Default::default()).map_err(|_| ServiceError::InvalidInput)?;
+        self.ensure_capacity(meta.info_hash.0)?;
         let id = self.service.add_metainfo(bytes)?;
         self.register(id)?;
         Ok(id)
     }
 
     pub fn add_magnet(&self, uri: &str) -> Result<TorrentId, ServiceError> {
-        self.ensure_capacity()?;
+        let magnet =
+            magnet::parse(uri, Default::default()).map_err(|_| ServiceError::InvalidInput)?;
+        self.ensure_capacity(magnet.info_hash.0)?;
         self.service.add_magnet(uri)
     }
 
@@ -138,10 +171,104 @@ impl TorrentRuntime {
             .map_err(map_schedule)
     }
 
+    pub fn accept_peer_handshake(
+        &self,
+        id: TorrentId,
+        peer: [u8; 32],
+        bytes: &[u8],
+    ) -> Result<Handshake, ServiceError> {
+        let meta = self
+            .service
+            .get_metainfo(id)?
+            .ok_or(ServiceError::Unsupported)?;
+        let mut session = PeerWireSession::new(
+            meta.info_hash.0,
+            meta.piece_length,
+            meta.total_length,
+            MAX_BLOCK_LENGTH,
+            self.max_inflight_per_peer,
+        )
+        .map_err(|_| ServiceError::InvalidInput)?;
+        let handshake = session
+            .accept_handshake(bytes)
+            .map_err(|_| ServiceError::InvalidInput)?;
+        let mut torrents = self.torrents.lock().map_err(|_| ServiceError::Storage)?;
+        let state = torrents.get_mut(&id).ok_or(ServiceError::NotFound)?;
+        if state.peers.contains_key(&peer) {
+            return Err(ServiceError::Conflict);
+        }
+        state
+            .pieces
+            .set_availability(peer, &vec![false; meta.piece_hashes.len()])
+            .map_err(map_schedule)?;
+        state.peers.insert(peer, session);
+        Ok(handshake)
+    }
+
+    pub fn process_peer_message(
+        &self,
+        id: TorrentId,
+        peer: [u8; 32],
+        message: Message,
+    ) -> Result<PeerMessageOutcome, ServiceError> {
+        let (event, cancellations, incoming_block) = {
+            let mut torrents = self.torrents.lock().map_err(|_| ServiceError::Storage)?;
+            let state = torrents.get_mut(&id).ok_or(ServiceError::NotFound)?;
+            let session = state.peers.get_mut(&peer).ok_or(ServiceError::NotFound)?;
+            let event = session
+                .on_message(message)
+                .map_err(|_| ServiceError::InvalidInput)?;
+            let mut cancellations = Vec::new();
+            if event == PeerEvent::Choked {
+                cancellations = session.clear_pending_downloads();
+                state.pieces.cancel_peer_requests(peer);
+                state.requests.retain(|(_, _, owner), _| *owner != peer);
+            }
+            match &event {
+                PeerEvent::Have(_) | PeerEvent::Bitfield(_) => {
+                    state
+                        .pieces
+                        .set_availability(peer, session.remote_pieces())
+                        .map_err(map_schedule)?;
+                }
+                _ => {}
+            }
+            let incoming = if let PeerEvent::DownloadPiece {
+                index,
+                begin,
+                block,
+            } = &event
+            {
+                Some((
+                    state
+                        .requests
+                        .get(&(*index, *begin, peer))
+                        .cloned()
+                        .ok_or(ServiceError::Conflict)?,
+                    block.clone(),
+                ))
+            } else {
+                None
+            };
+            (event, cancellations, incoming)
+        };
+        let completed_piece = if let Some((request, bytes)) = incoming_block {
+            Some(self.receive_block(id, &request, &bytes)?)
+        } else {
+            None
+        };
+        Ok(PeerMessageOutcome {
+            event,
+            cancellations,
+            completed_piece,
+        })
+    }
+
     pub fn disconnect_peer(&self, id: TorrentId, peer: [u8; 32]) -> Result<(), ServiceError> {
         let mut torrents = self.torrents.lock().map_err(|_| ServiceError::Storage)?;
         let state = torrents.get_mut(&id).ok_or(ServiceError::NotFound)?;
         state.pieces.disconnect_peer(peer);
+        state.peers.remove(&peer);
         state.requests.retain(|(_, _, owner), _| *owner != peer);
         let requested: std::collections::BTreeSet<_> =
             state.requests.keys().map(|(piece, _, _)| *piece).collect();
@@ -218,6 +345,12 @@ impl TorrentRuntime {
             .pieces
             .request_block(peer, piece, begin, length, piece_size, MAX_BLOCK_LENGTH)
             .map_err(map_schedule)?;
+        if let Some(session) = state.peers.get_mut(&peer) {
+            if session.request_block(piece, begin, length).is_err() {
+                state.pieces.complete_block(&request);
+                return Err(ServiceError::Conflict);
+            }
+        }
         state.requests.insert((piece, begin, peer), request.clone());
         Ok(request)
     }
@@ -297,13 +430,40 @@ impl TorrentRuntime {
             .status(piece))
     }
 
-    fn ensure_capacity(&self) -> Result<(), ServiceError> {
-        if self
-            .torrents
-            .lock()
-            .map_err(|_| ServiceError::Storage)?
-            .len()
-            >= self.max_torrents
+    pub fn read_verified_block(
+        &self,
+        id: TorrentId,
+        piece: u32,
+        begin: u32,
+        length: u32,
+    ) -> Result<Vec<u8>, ServiceError> {
+        if length == 0 || length > MAX_BLOCK_LENGTH {
+            return Err(ServiceError::InvalidInput);
+        }
+        let snapshot = self.service.get(id)?;
+        if snapshot.verified_pieces.get(piece as usize) != Some(&true) {
+            return Err(ServiceError::Conflict);
+        }
+        let meta = self
+            .service
+            .get_metainfo(id)?
+            .ok_or(ServiceError::Unsupported)?;
+        let storage =
+            Storage::open(self.service.payload_root(id)).map_err(|_| ServiceError::Storage)?;
+        storage
+            .read_block(
+                &meta.files,
+                meta.piece_length,
+                piece,
+                begin,
+                length as usize,
+            )
+            .map_err(|_| ServiceError::Storage)
+    }
+
+    fn ensure_capacity(&self, hash: [u8; 20]) -> Result<(), ServiceError> {
+        if self.service.list()?.len() >= self.max_torrents
+            && self.service.find_by_hash(InfoHashV1(hash))?.is_none()
         {
             return Err(ServiceError::InvalidInput);
         }
@@ -340,6 +500,7 @@ impl TorrentRuntime {
                     requests: BTreeMap::new(),
                     blocks: BTreeMap::new(),
                     buffered_bytes: 0,
+                    peers: BTreeMap::new(),
                 },
             );
         Ok(())
@@ -446,6 +607,119 @@ mod tests {
             runtime.piece_status(id, 0).unwrap(),
             Some(PieceStatus::Missing)
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stop_invalidates_outstanding_block_ownership() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let id = runtime.add_metainfo(&metainfo()).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let peer = [10; 32];
+        runtime.set_peer_availability(id, peer, &[true]).unwrap();
+        let request = runtime.request_block(id, peer, 0, 0, 4).unwrap();
+        runtime.command(TorrentCommand::Stop(id)).unwrap();
+        assert_eq!(
+            runtime.receive_block(id, &request, b"data"),
+            Err(ServiceError::Conflict)
+        );
+        assert_eq!(
+            runtime.piece_status(id, 0).unwrap(),
+            Some(PieceStatus::Missing)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hash_failure_releases_the_piece_for_a_valid_redownload() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let id = runtime.add_metainfo(&metainfo()).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let peer = [11; 32];
+        runtime.set_peer_availability(id, peer, &[true]).unwrap();
+        let invalid = runtime.request_block(id, peer, 0, 0, 4).unwrap();
+        assert_eq!(
+            runtime.receive_block(id, &invalid, b"evil"),
+            Err(ServiceError::InvalidInput)
+        );
+        assert_eq!(
+            runtime.piece_status(id, 0).unwrap(),
+            Some(PieceStatus::Missing)
+        );
+        let valid = runtime.request_block(id, peer, 0, 0, 4).unwrap();
+        assert!(runtime.receive_block(id, &valid, b"data").unwrap());
+        assert_eq!(
+            runtime.piece_status(id, 0).unwrap(),
+            Some(PieceStatus::Verified)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn peer_wire_events_drive_runtime_availability_and_verified_progress() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let bytes = metainfo();
+        let id = runtime.add_metainfo(&bytes).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let meta = runtime.service().get_metainfo(id).unwrap().unwrap();
+        let peer = [12; 32];
+        let handshake = Handshake {
+            reserved: [0; 8],
+            info_hash: meta.info_hash.0,
+            peer_id: [13; 20],
+        };
+        runtime
+            .accept_peer_handshake(id, peer, &i2pr_tc_core::wire::encode_handshake(&handshake))
+            .unwrap();
+        assert_eq!(
+            runtime
+                .process_peer_message(id, peer, Message::Unchoke)
+                .unwrap()
+                .event,
+            PeerEvent::Unchoked
+        );
+        runtime
+            .process_peer_message(id, peer, Message::Bitfield(vec![0x80]))
+            .unwrap();
+        assert_eq!(runtime.choose_piece(id, peer).unwrap(), Some(0));
+        let request = runtime.request_block(id, peer, 0, 0, 4).unwrap();
+        assert_eq!(request.length, 4);
+        let outcome = runtime
+            .process_peer_message(
+                id,
+                peer,
+                Message::Piece {
+                    index: 0,
+                    begin: 0,
+                    block: b"data".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.completed_piece, Some(true));
+        assert_eq!(runtime.service().get(id).unwrap().verified_bytes, 4);
+        let upload = runtime
+            .process_peer_message(
+                id,
+                peer,
+                Message::Request {
+                    index: 0,
+                    begin: 1,
+                    length: 2,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            upload.event,
+            PeerEvent::UploadRequest {
+                index: 0,
+                begin: 1,
+                length: 2
+            }
+        );
+        assert_eq!(runtime.read_verified_block(id, 0, 1, 2).unwrap(), b"at");
         let _ = std::fs::remove_dir_all(root);
     }
 }
