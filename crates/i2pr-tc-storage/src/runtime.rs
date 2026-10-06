@@ -211,6 +211,26 @@ impl TorrentRuntime {
         peer: [u8; 32],
         message: Message,
     ) -> Result<PeerMessageOutcome, ServiceError> {
+        self.process_peer_message_inner(id, peer, message, None)
+    }
+
+    pub fn process_peer_message_cancellable(
+        &self,
+        id: TorrentId,
+        peer: [u8; 32],
+        message: Message,
+        cancellation: &Cancellation,
+    ) -> Result<PeerMessageOutcome, ServiceError> {
+        self.process_peer_message_inner(id, peer, message, Some(cancellation))
+    }
+
+    fn process_peer_message_inner(
+        &self,
+        id: TorrentId,
+        peer: [u8; 32],
+        message: Message,
+        cancellation: Option<&Cancellation>,
+    ) -> Result<PeerMessageOutcome, ServiceError> {
         let (event, cancellations, incoming_block) = {
             let mut torrents = self.torrents.lock().map_err(|_| ServiceError::Storage)?;
             let state = torrents.get_mut(&id).ok_or(ServiceError::NotFound)?;
@@ -253,7 +273,7 @@ impl TorrentRuntime {
             (event, cancellations, incoming)
         };
         let completed_piece = if let Some((request, bytes)) = incoming_block {
-            Some(self.receive_block(id, &request, &bytes)?)
+            Some(self.receive_block_inner(id, &request, &bytes, cancellation)?)
         } else {
             None
         };
@@ -363,6 +383,30 @@ impl TorrentRuntime {
         request: &BlockRequest,
         bytes: &[u8],
     ) -> Result<bool, ServiceError> {
+        self.receive_block_inner(id, request, bytes, None)
+    }
+
+    pub fn receive_block_cancellable(
+        &self,
+        id: TorrentId,
+        request: &BlockRequest,
+        bytes: &[u8],
+        cancellation: &Cancellation,
+    ) -> Result<bool, ServiceError> {
+        self.receive_block_inner(id, request, bytes, Some(cancellation))
+    }
+
+    fn receive_block_inner(
+        &self,
+        id: TorrentId,
+        request: &BlockRequest,
+        bytes: &[u8],
+        cancellation: Option<&Cancellation>,
+    ) -> Result<bool, ServiceError> {
+        if cancellation.is_some_and(Cancellation::is_cancelled) {
+            self.release_request(id, request)?;
+            return Err(ServiceError::Cancelled);
+        }
         if bytes.len() != request.length as usize {
             return Err(ServiceError::InvalidInput);
         }
@@ -395,7 +439,13 @@ impl TorrentRuntime {
             return Ok(false);
         }
         let piece = request.piece;
-        match self.service.store_verified_piece(id, piece, &assembled) {
+        let store_result = if let Some(token) = cancellation {
+            self.service
+                .store_piece_with_cancellation(id, piece, &assembled, Some(token))
+        } else {
+            self.service.store_verified_piece(id, piece, &assembled)
+        };
+        match store_result {
             Ok(()) => {
                 state.pieces.mark_verified(piece).map_err(map_schedule)?;
                 if let Some(blocks) = state.blocks.remove(&piece) {
@@ -415,6 +465,34 @@ impl TorrentRuntime {
                 Err(error)
             }
         }
+    }
+
+    fn release_request(&self, id: TorrentId, request: &BlockRequest) -> Result<(), ServiceError> {
+        let mut torrents = self.torrents.lock().map_err(|_| ServiceError::Storage)?;
+        let state = torrents.get_mut(&id).ok_or(ServiceError::NotFound)?;
+        let key = (request.piece, request.begin, request.peer);
+        if state.requests.get(&key) == Some(request) {
+            let pending: Vec<_> = state
+                .requests
+                .iter()
+                .filter(|((piece, _, _), _)| *piece == request.piece)
+                .map(|(key, request)| (*key, request.clone()))
+                .collect();
+            for ((piece, begin, peer), block_request) in pending {
+                state.requests.remove(&(piece, begin, peer));
+                if let Some(session) = state.peers.get_mut(&peer) {
+                    session.cancel_block(piece, begin, block_request.length);
+                }
+            }
+            state
+                .pieces
+                .reset_piece(request.piece)
+                .map_err(map_schedule)?;
+            if let Some(blocks) = state.blocks.remove(&request.piece) {
+                state.buffered_bytes -= blocks.iter().map(|(_, block)| block.len()).sum::<usize>();
+            }
+        }
+        Ok(())
     }
 
     pub fn piece_status(
@@ -632,6 +710,69 @@ mod tests {
     }
 
     #[test]
+    fn choke_cancels_peer_owned_blocks_and_allows_peer_retry() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let id = runtime.add_metainfo(&metainfo()).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let meta = runtime.service().get_metainfo(id).unwrap().unwrap();
+        let peers = [[31; 32], [32; 32]];
+        for (n, peer) in peers.iter().enumerate() {
+            let handshake = Handshake {
+                reserved: [0; 8],
+                info_hash: meta.info_hash.0,
+                peer_id: [n as u8 + 1; 20],
+            };
+            runtime
+                .accept_peer_handshake(id, *peer, &i2pr_tc_core::wire::encode_handshake(&handshake))
+                .unwrap();
+            runtime
+                .process_peer_message(id, *peer, Message::Unchoke)
+                .unwrap();
+            runtime
+                .process_peer_message(id, *peer, Message::Bitfield(vec![0x80]))
+                .unwrap();
+        }
+        let request = runtime.request_block(id, peers[0], 0, 0, 4).unwrap();
+        let choked = runtime
+            .process_peer_message(id, peers[0], Message::Choke)
+            .unwrap();
+        assert_eq!(
+            choked.cancellations,
+            vec![Message::Cancel {
+                index: 0,
+                begin: 0,
+                length: 4,
+            }]
+        );
+        assert_eq!(
+            runtime.receive_block(id, &request, b"data"),
+            Err(ServiceError::Conflict)
+        );
+        let retry = runtime.request_block(id, peers[1], 0, 0, 4).unwrap();
+        assert_eq!(retry.peer, peers[1]);
+        assert!(runtime.receive_block(id, &retry, b"data").unwrap());
+        assert_eq!(runtime.service().get(id).unwrap().verified_bytes, 4);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disconnect_discards_partial_peer_blocks_before_retry() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let id = runtime.add_metainfo(&metainfo()).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let first_peer = [33; 32];
+        let first = runtime.request_block(id, first_peer, 0, 0, 2).unwrap();
+        assert!(!runtime.receive_block(id, &first, b"da").unwrap());
+        runtime.disconnect_peer(id, first_peer).unwrap();
+        let retry = runtime.request_block(id, [34; 32], 0, 0, 4).unwrap();
+        assert!(runtime.receive_block(id, &retry, b"data").unwrap());
+        assert_eq!(runtime.service().get(id).unwrap().verified_bytes, 4);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn hash_failure_releases_the_piece_for_a_valid_redownload() {
         let root = root();
         let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
@@ -654,6 +795,53 @@ mod tests {
             runtime.piece_status(id, 0).unwrap(),
             Some(PieceStatus::Verified)
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancelled_piece_acceptance_releases_runtime_request_without_writing() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let id = runtime.add_metainfo(&metainfo()).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let peer = [14; 32];
+        let meta = runtime.service().get_metainfo(id).unwrap().unwrap();
+        let handshake = Handshake {
+            reserved: [0; 8],
+            info_hash: meta.info_hash.0,
+            peer_id: [15; 20],
+        };
+        runtime
+            .accept_peer_handshake(id, peer, &i2pr_tc_core::wire::encode_handshake(&handshake))
+            .unwrap();
+        runtime
+            .process_peer_message(id, peer, Message::Unchoke)
+            .unwrap();
+        runtime
+            .process_peer_message(id, peer, Message::Bitfield(vec![0x80]))
+            .unwrap();
+        let request = runtime.request_block(id, peer, 0, 0, 4).unwrap();
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        assert_eq!(
+            runtime.process_peer_message_cancellable(
+                id,
+                peer,
+                Message::Piece {
+                    index: request.piece,
+                    begin: request.begin,
+                    block: b"data".to_vec(),
+                },
+                &cancellation,
+            ),
+            Err(ServiceError::Cancelled)
+        );
+        assert_eq!(
+            runtime.piece_status(id, 0).unwrap(),
+            Some(PieceStatus::Missing)
+        );
+        assert_eq!(runtime.service().get(id).unwrap().verified_bytes, 0);
+        assert!(!runtime.service().payload_root(id).join("x").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

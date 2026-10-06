@@ -161,6 +161,7 @@ impl Storage {
         piece_index: u32,
         bytes: &[u8],
         cancellation: Option<&Cancellation>,
+        after_file_write: &mut dyn FnMut(),
     ) -> Result<(), StorageError> {
         if piece_length == 0 || piece_length > MAX_PIECE_LENGTH {
             return Err(StorageError::Layout);
@@ -203,6 +204,7 @@ impl Storage {
             let mut file = OpenOptions::new().write(true).open(p)?;
             file.seek(SeekFrom::Start(global))?;
             file.write_all(&bytes[consumed..consumed + take])?;
+            after_file_write();
             consumed += take;
             global = 0;
             if consumed == bytes.len() {
@@ -244,6 +246,28 @@ impl Storage {
         expected_hash: [u8; 20],
         cancellation: &Cancellation,
     ) -> Result<(), StorageError> {
+        self.write_verified_piece_cancellable_with_hook(
+            files,
+            piece_length,
+            piece_index,
+            bytes,
+            expected_hash,
+            cancellation,
+            &mut || {},
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Test seam injects cancellation at a file boundary.
+    fn write_verified_piece_cancellable_with_hook(
+        &self,
+        files: &[TorrentFile],
+        piece_length: u32,
+        piece_index: u32,
+        bytes: &[u8],
+        expected_hash: [u8; 20],
+        cancellation: &Cancellation,
+        after_file_write: &mut dyn FnMut(),
+    ) -> Result<(), StorageError> {
         if cancellation.is_cancelled() {
             return Err(StorageError::Cancelled);
         }
@@ -261,7 +285,14 @@ impl Storage {
             return Err(StorageError::Cancelled);
         }
         let _permit = self.disk.lock().map_err(|_| StorageError::Concurrency)?;
-        self.write_piece_unlocked(files, piece_length, piece_index, bytes, Some(cancellation))
+        self.write_piece_unlocked(
+            files,
+            piece_length,
+            piece_index,
+            bytes,
+            Some(cancellation),
+            after_file_write,
+        )
     }
     pub fn read_piece(
         &self,
@@ -395,6 +426,17 @@ impl Storage {
         hashes: &[[u8; 20]],
         cancellation: &Cancellation,
     ) -> Result<Vec<bool>, StorageError> {
+        self.recheck_cancellable_with_hook(files, piece_length, hashes, cancellation, &mut || {})
+    }
+
+    fn recheck_cancellable_with_hook(
+        &self,
+        files: &[TorrentFile],
+        piece_length: u32,
+        hashes: &[[u8; 20]],
+        cancellation: &Cancellation,
+        after_piece: &mut dyn FnMut(),
+    ) -> Result<Vec<bool>, StorageError> {
         if cancellation.is_cancelled() {
             return Err(StorageError::Cancelled);
         }
@@ -432,6 +474,7 @@ impl Storage {
                     digest
                 });
             good.push(actual.as_ref() == Some(expected));
+            after_piece();
         }
         Ok(good)
     }
@@ -630,6 +673,14 @@ fn portable_component(part: &str) -> bool {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    atomic_write_with_hook(path, bytes, &mut || Ok(()))
+}
+
+fn atomic_write_with_hook(
+    path: &Path,
+    bytes: &[u8],
+    before_rename: &mut dyn FnMut() -> Result<(), std::io::Error>,
+) -> Result<(), StorageError> {
     let parent = path.parent().ok_or(StorageError::Path)?;
     let sequence = RESUME_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".resume-{}-{sequence}.tmp", std::process::id()));
@@ -640,6 +691,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     let result = (|| {
         file.write_all(bytes)?;
         file.sync_all()?;
+        before_rename()?;
         fs::rename(&temp, path)?;
         if let Ok(directory) = File::open(parent) {
             let _ = directory.sync_all();
@@ -746,6 +798,63 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn cancellation_between_file_writes_stops_the_remaining_piece_io() {
+        let root = temp_root();
+        let storage = Storage::open(&root).unwrap();
+        let files = vec![
+            TorrentFile {
+                path: vec!["first".into()],
+                length: 3,
+            },
+            TorrentFile {
+                path: vec!["second".into()],
+                length: 3,
+            },
+        ];
+        storage.prepare(&files).unwrap();
+        let cancellation = Cancellation::default();
+        let hash = Sha1::digest(b"abcd").into();
+        let result = storage.write_verified_piece_cancellable_with_hook(
+            &files,
+            4,
+            0,
+            b"abcd",
+            hash,
+            &cancellation,
+            &mut || cancellation.cancel(),
+        );
+        assert!(matches!(result, Err(StorageError::Cancelled)));
+        assert_eq!(fs::read(root.join("first")).unwrap(), b"abc");
+        assert_eq!(fs::read(root.join("second")).unwrap(), &[0, 0, 0]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancellation_between_rechecked_pieces_stops_the_remaining_scan() {
+        let root = temp_root();
+        let storage = Storage::open(&root).unwrap();
+        let files = vec![TorrentFile {
+            path: vec!["payload".into()],
+            length: 8,
+        }];
+        storage.prepare(&files).unwrap();
+        let hashes: [[u8; 20]; 2] = [Sha1::digest(b"abcd").into(), Sha1::digest(b"efgh").into()];
+        storage
+            .write_verified_piece(&files, 4, 0, b"abcd", hashes[0])
+            .unwrap();
+        storage
+            .write_verified_piece(&files, 4, 1, b"efgh", hashes[1])
+            .unwrap();
+        let cancellation = Cancellation::default();
+        let result =
+            storage.recheck_cancellable_with_hook(&files, 4, &hashes, &cancellation, &mut || {
+                cancellation.cancel()
+            });
+        assert!(matches!(result, Err(StorageError::Cancelled)));
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn rejects_escape_components_and_stale_resume() {
         let root = temp_root();
@@ -784,9 +893,18 @@ mod tests {
             uploaded: 2,
         };
         storage.save_resume(&state).unwrap();
+        let replacement = ResumeState {
+            downloaded: 10,
+            ..state.clone()
+        };
+        storage.save_resume(&replacement).unwrap();
         assert_eq!(
             storage.load_resume(hash, 2, 10, 4096).unwrap().verified,
             vec![true, false]
+        );
+        assert_eq!(
+            storage.load_resume(hash, 2, 10, 4096).unwrap().downloaded,
+            10
         );
         assert!(storage.load_resume(hash, 2, 10, 8).is_err());
         assert!(storage
@@ -830,6 +948,25 @@ mod tests {
                 .verified,
             state.verified
         );
+    }
+
+    #[test]
+    fn interrupted_atomic_replacement_keeps_the_old_record_valid() {
+        let root = temp_root();
+        let path = root.join("catalog.json");
+        fs::write(&path, b"old-valid").unwrap();
+        let interrupted = atomic_write_with_hook(&path, b"new-valid", &mut || {
+            Err(std::io::Error::other(
+                "simulated interruption before rename",
+            ))
+        });
+        assert!(matches!(interrupted, Err(StorageError::Io(_))));
+        assert_eq!(fs::read(&path).unwrap(), b"old-valid");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+
+        atomic_write(&path, b"new-valid").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new-valid");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

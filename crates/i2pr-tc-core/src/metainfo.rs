@@ -367,6 +367,13 @@ mod tests {
         let mut h = Sha1::new();
         h.update(&data[start..data.len() - 1]);
         assert_eq!(meta.info_hash.0, <[u8; 20]>::from(h.finalize()));
+        assert_eq!(
+            meta.info_hash.0,
+            [
+                0x29, 0xa1, 0xa4, 0x49, 0x20, 0xa1, 0xe2, 0xbe, 0x8c, 0x20, 0xf5, 0x73, 0x09, 0xec,
+                0x61, 0x4f, 0x17, 0x6e, 0x81, 0x4f,
+            ]
+        );
         assert!(meta.trackers.is_empty());
     }
     #[test]
@@ -379,7 +386,22 @@ mod tests {
         bad.extend([0u8; 20]);
         bad.extend_from_slice(b"ee");
         assert!(parse(&bad, MetaLimits::default()).is_err());
-        for name in [b"CON".as_slice(), b"trailing.".as_slice(), b"bad?name"] {
+        for name in [
+            b"CON".as_slice(),
+            b"NUL.txt",
+            b"COM1.log",
+            b"trailing.",
+            b"trailing ",
+            b"bad?name",
+            b"C:\\absolute",
+            b"//server/share",
+            b"a/b",
+            b"a\\b",
+            b".",
+            b"..",
+            b"",
+            b"bad\0name",
+        ] {
             let mut data = format!("d4:infod6:lengthi1e4:name{}:", name.len()).into_bytes();
             data.extend_from_slice(name);
             data.extend_from_slice(b"12:piece lengthi1e6:pieces20:");

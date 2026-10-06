@@ -222,4 +222,46 @@ mod tests {
             Some(1)
         );
     }
+
+    #[test]
+    fn rejects_numeric_and_resource_limit_overflows() {
+        assert_eq!(
+            parse(b"i9223372036854775808e", Limits::default()),
+            Err(Error::Integer)
+        );
+        assert_eq!(
+            parse(b"i-9223372036854775809e", Limits::default()),
+            Err(Error::Integer)
+        );
+        assert_eq!(
+            parse(
+                b"5:hello",
+                Limits {
+                    string: 4,
+                    ..Limits::default()
+                }
+            ),
+            Err(Error::StringLimit)
+        );
+        assert_eq!(
+            parse(
+                b"lli1eee",
+                Limits {
+                    depth: 1,
+                    ..Limits::default()
+                }
+            ),
+            Err(Error::Depth)
+        );
+        assert_eq!(
+            parse(
+                b"li1ei2ee",
+                Limits {
+                    items: 2,
+                    ..Limits::default()
+                }
+            ),
+            Err(Error::Items)
+        );
+    }
 }
