@@ -72,7 +72,15 @@ HOST_SOCKET = re.compile(
 )
 
 
-def check(root: Path) -> list[str]:
+def check(root: Path) -> tuple[list[str], list[str]]:
+    """Return the boundary violations and the declared test-only connectors.
+
+    The connectors are returned rather than printed here because they are
+    evidence: every declared test-only connector is a place where a host socket
+    exists in this repository, and a reader of a verification run must be able
+    to see the actual set rather than take a fixed list on trust. A new
+    connector that is correctly declared still has to appear.
+    """
     failures: list[str] = []
     test_only_connectors: list[str] = []
     for crate, allowed in ALLOWED_DEPENDENCIES.items():
@@ -134,7 +142,7 @@ def check(root: Path) -> list[str]:
                                 f"{relative}:{line_number}: host socket in a test target "
                                 f"without a '{TEST_ONLY_SOCKET_MARKER}' declaration"
                             )
-    return failures
+    return failures, test_only_connectors
 
 
 def self_test() -> list[str]:
@@ -206,27 +214,27 @@ def self_test() -> list[str]:
         (storage / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         (i2p / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         (transmission / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
-        if check(root):
+        if check(root)[0]:
             failed.append("boundary guard rejected its clean control fixture")
         with (core / "Cargo.toml").open("a", encoding="utf-8") as stream:
             stream.write("tokio='1'\n")
-        if not any("forbidden dependencies" in item for item in check(root)):
+        if not any("forbidden dependencies" in item for item in check(root)[0]):
             failed.append("boundary guard missed an added network-capable dependency")
         with (core / "Cargo.toml").open("w", encoding="utf-8") as stream:
             stream.write("[package]\nname='i2pr-tc-core'\n[dependencies]\nsha1='0.10'\n")
         (core / "src/lib.rs").write_text("use std::net::TcpStream;\n", encoding="utf-8")
-        if not any("forbidden boundary reference" in item for item in check(root)):
+        if not any("forbidden boundary reference" in item for item in check(root)[0]):
             failed.append("boundary guard missed a direct socket reference")
         (core / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         (i2p / "src/peer.rs").write_text(
             "const HEADER: &str = \"User-Agent: i2pr-tc/0.1\";\n", encoding="utf-8"
         )
-        if not any("reintroduced version fingerprint" in item for item in check(root)):
+        if not any("reintroduced version fingerprint" in item for item in check(root)[0]):
             failed.append("boundary guard missed a reintroduced version fingerprint")
         (i2p / "src/peer.rs").write_text(
             "// assert the header stays gone // boundary-guard:allow\n", encoding="utf-8"
         )
-        if any("reintroduced version fingerprint" in item for item in check(root)):
+        if any("reintroduced version fingerprint" in item for item in check(root)[0]):
             failed.append("boundary guard ignored an explicit exemption marker")
         (i2p / "src/peer.rs").unlink()
         # A direct local connector is allowed only in a declared test target.
@@ -236,10 +244,16 @@ def self_test() -> list[str]:
         connector.write_text(
             "// boundary-guard:test-only\nuse tokio::net::TcpStream;\n", encoding="utf-8"
         )
-        if any("without a" in item for item in check(root)):
+        if any("without a" in item for item in check(root)[0]):
             failed.append("boundary guard rejected a declared test-only connector")
+        # The declared connector has to be reported as evidence, not merely
+        # tolerated: a run that silently drops it would let a new host socket
+        # into a test target without ever appearing in the verification output.
+        declared = [item.split(":", 1)[0] for item in check(root)[1]]
+        if not any(item.endswith("connector.rs") for item in declared):
+            failed.append("boundary guard did not report the declared test-only connector")
         connector.write_text("use tokio::net::TcpStream;\n", encoding="utf-8")
-        if not any("without a" in item for item in check(root)):
+        if not any("without a" in item for item in check(root)[0]):
             failed.append("boundary guard missed an undeclared host socket in a test target")
     return failed
 
@@ -250,15 +264,20 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     failures = self_test() if args.self_test else []
-    failures.extend(check(args.root.resolve()))
+    checked, test_only_connectors = check(args.root.resolve())
+    failures.extend(checked)
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
     print("foundation dependency and source boundaries passed")
-    print(
-        "declared test-only host connectors (absent from the managed production "
-        "profile): crates/i2pr-tc-i2p/tests/sam_live_qualification.rs"
-    )
+    files = sorted({connector.split(":", 1)[0] for connector in test_only_connectors})
+    if files:
+        print(
+            "declared test-only host connectors (absent from the managed production "
+            f"profile): {', '.join(files)}"
+        )
+    else:
+        print("no test-only host connectors are declared")
     return 0
 
 
