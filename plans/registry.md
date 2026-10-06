@@ -43,7 +43,7 @@ Frontend work is deferred until backend/RPC/managed-runtime boundaries are stabl
 
 Primary upstream: `dbowm91/i2pr:main`.
 
-Latest inspected upstream main on 2026-10-06: `4c0a0a4a4884c20bcd2a77ac7ea7bb170cd802e9` (Plan 368 registration).
+Latest inspected upstream main on 2026-10-06: `579725eec85f8a38233a06f86c23cf6efab3f21b` (Plan 368 registered in registry/roadmap/support inventory; SAM 3.3 support remains explicitly unclaimed).
 
 The authoritative i2pr registry records managed-app Plans 345, 349, 352–355 as closed. Plans 354/355 continue to provide listener-independent private raw SAM/I2CP connections and the app-principal/capability gateway. The router's SAM product is still a SAM 3.1 STREAM baseline; Plan 368 is now registered to add the SAM 3.3 PRIMARY/subsession shared-Destination profile over the existing Streaming plus protocol-17/protocol-18 datagram substrates.
 
