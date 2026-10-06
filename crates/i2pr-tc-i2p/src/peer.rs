@@ -274,24 +274,21 @@ pub async fn serve_incoming<S: I2pSession + ?Sized + 'static>(
                 let peer_sources = sources.clone();
                 children.spawn(async move {
                     let mut stream = stream;
-                    if let Ok(remote) = read_handshake(&mut stream, &token, limits.handshake_timeout).await {
-                        if let Ok(Some(id)) = find_torrent(runtime.service(), remote.info_hash) {
-                            let context = PeerContext {
-                                runtime: &runtime,
-                                id,
-                                peer: DestinationHash(destination.hash()),
-                                local_hash,
-                                cancellation: &token,
-                                limits,
-                                sources: peer_sources,
-                            };
-                            let _ = run_inbound_stream(
-                                &context,
-                                stream,
-                                remote,
-                                local_peer_id,
-                            ).await;
-                        }
+                    if let Ok(remote) =
+                        read_handshake(&mut stream, &token, limits.handshake_timeout).await
+                        && let Ok(Some(id)) = find_torrent(runtime.service(), remote.info_hash)
+                    {
+                        let context = PeerContext {
+                            runtime: &runtime,
+                            id,
+                            peer: DestinationHash(destination.hash()),
+                            local_hash,
+                            cancellation: &token,
+                            limits,
+                            sources: peer_sources,
+                        };
+                        let _ =
+                            run_inbound_stream(&context, stream, remote, local_peer_id).await;
                     }
                 });
             }
@@ -443,11 +440,12 @@ async fn handle_message<W: AsyncWrite + Unpin>(
             return Err(PeerError::Protocol);
         }
         state.ext.0 = map;
-        if state.metadata.is_some() && state.ext.0.contains_key("ut_metadata") {
-            if let Some(size) = parse_metadata_size(payload, context.limits.max_metadata_size)? {
-                state.metadata.as_mut().unwrap().set_size(size)?;
-                send_metadata_requests(stream, state, context.cancellation).await?;
-            }
+        if state.metadata.is_some()
+            && state.ext.0.contains_key("ut_metadata")
+            && let Some(size) = parse_metadata_size(payload, context.limits.max_metadata_size)?
+        {
+            state.metadata.as_mut().unwrap().set_size(size)?;
+            send_metadata_requests(stream, state, context.cancellation).await?;
         }
     }
     if let Message::Extension {
@@ -474,28 +472,28 @@ async fn handle_message<W: AsyncWrite + Unpin>(
             handle_metadata(context, stream, state, payload).await?;
         }
     }
-    if let Message::Extension { id: 0, .. } = &message {
-        if state.ext.0.contains_key("i2p_pex") {
-            let added = state
-                .sources
-                .lock()
-                .map_err(|_| PeerError::Protocol)?
-                .advertisable(context.peer, context.limits.max_pex_peers);
-            if !added.is_empty() {
-                let payload = encode_i2p_pex(&i2pr_tc_core::wire::I2pPex {
-                    added,
-                    dropped: Vec::new(),
-                });
-                write_message(
-                    stream,
-                    &Message::Extension {
-                        id: LOCAL_UT_PEX_ID,
-                        payload,
-                    },
-                    context.cancellation,
-                )
-                .await?;
-            }
+    if let Message::Extension { id: 0, .. } = &message
+        && state.ext.0.contains_key("i2p_pex")
+    {
+        let added = state
+            .sources
+            .lock()
+            .map_err(|_| PeerError::Protocol)?
+            .advertisable(context.peer, context.limits.max_pex_peers);
+        if !added.is_empty() {
+            let payload = encode_i2p_pex(&i2pr_tc_core::wire::I2pPex {
+                added,
+                dropped: Vec::new(),
+            });
+            write_message(
+                stream,
+                &Message::Extension {
+                    id: LOCAL_UT_PEX_ID,
+                    payload,
+                },
+                context.cancellation,
+            )
+            .await?;
         }
     }
     if state.metadata.is_some() && matches!(&message, Message::Bitfield(_) | Message::Have(_)) {

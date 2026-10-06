@@ -492,11 +492,11 @@ impl TorrentRuntime {
             .pieces
             .request_block(peer, piece, begin, length, piece_size, MAX_BLOCK_LENGTH)
             .map_err(map_schedule)?;
-        if let Some(session) = state.peers.get_mut(&peer) {
-            if session.request_block(piece, begin, length).is_err() {
-                state.pieces.complete_block(&request);
-                return Err(ServiceError::Conflict);
-            }
+        if let Some(session) = state.peers.get_mut(&peer)
+            && session.request_block(piece, begin, length).is_err()
+        {
+            state.pieces.complete_block(&request);
+            return Err(ServiceError::Conflict);
         }
         state.requests.insert((piece, begin, peer), request.clone());
         Ok(request)

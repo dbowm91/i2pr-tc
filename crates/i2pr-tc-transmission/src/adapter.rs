@@ -288,10 +288,10 @@ impl TransmissionAdapter {
             ),
             ("upload_limited", json!(snapshot.upload_limit.is_some())),
         ]);
-        if fields.iter().any(|field| field == "files") {
-            if let Some(meta) = meta.as_ref() {
-                values.insert("files", json!(project_files(meta, snapshot)));
-            }
+        if fields.iter().any(|field| field == "files")
+            && let Some(meta) = meta.as_ref()
+        {
+            values.insert("files", json!(project_files(meta, snapshot)));
         }
         if let Some(meta) = meta.as_ref() {
             let size_when_done: u64 = meta

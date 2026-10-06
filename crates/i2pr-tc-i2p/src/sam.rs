@@ -111,7 +111,7 @@ impl SamLimits {
         if self.max_token_bytes < 8
             || self.max_value_bytes < 8
             || self.max_options < 1
-            || smallest.map_or(true, |sum| self.max_line_bytes < sum + 1)
+            || smallest.is_none_or(|sum| self.max_line_bytes < sum + 1)
             || self.max_reply_bytes < self.max_line_bytes
         {
             return Err(SamError::Configuration);
@@ -1127,28 +1127,26 @@ impl<F: SamConnectionFactory> SamClient<F> {
                 // A following `KEY=VALUE` line is read only when the status line
                 // omitted a value this command needs, so a stream that is
                 // already raw data never blocks here.
-                if let Some(key) = want {
-                    if reply.option(key).is_none() {
-                        match reply.result() {
-                            Some(SamResult::Ok) => {
-                                let raw = read_line(stream, &limits, &mut budget).await?;
-                                let text =
-                                    std::str::from_utf8(trim_ending(&raw)).map_err(|_| {
-                                        SamError::Protocol("SAM reply line is not UTF-8")
-                                    })?;
-                                apply_token(&mut reply, text, &limits)?;
-                                if reply.option(key).is_none() {
-                                    return Err(TransportError::from(SamError::Missing(key)));
-                                }
+                if let Some(key) = want
+                    && reply.option(key).is_none()
+                {
+                    match reply.result() {
+                        Some(SamResult::Ok) => {
+                            let raw = read_line(stream, &limits, &mut budget).await?;
+                            let text = std::str::from_utf8(trim_ending(&raw))
+                                .map_err(|_| SamError::Protocol("SAM reply line is not UTF-8"))?;
+                            apply_token(&mut reply, text, &limits)?;
+                            if reply.option(key).is_none() {
+                                return Err(TransportError::from(SamError::Missing(key)));
                             }
-                            Some(other) => {
-                                return Err(TransportError::from(SamError::Router(other)));
-                            }
-                            None => {
-                                return Err(TransportError::from(SamError::Protocol(
-                                    "SAM reply is missing RESULT",
-                                )));
-                            }
+                        }
+                        Some(other) => {
+                            return Err(TransportError::from(SamError::Router(other)));
+                        }
+                        None => {
+                            return Err(TransportError::from(SamError::Protocol(
+                                "SAM reply is missing RESULT",
+                            )));
                         }
                     }
                 }

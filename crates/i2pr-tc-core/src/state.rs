@@ -140,7 +140,7 @@ impl PieceMap {
     ) -> Result<BlockRequest, ScheduleError> {
         if length == 0
             || length > max_block
-            || begin.checked_add(length).map_or(true, |e| e > piece_size)
+            || begin.checked_add(length).is_none_or(|e| e > piece_size)
         {
             return Err(ScheduleError::InvalidBlock);
         }
