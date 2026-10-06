@@ -114,13 +114,25 @@ transmission 6, transmission integration 1 — 122 plus the fuzz crate's build.
 
 ## 8. Hosted CI evidence
 
-**Limitation, not a pass.** This environment cannot observe GitHub Actions run
-state for a pushed commit, so no run ID is claimed. `.github/workflows/ci.yml`
-is committed on `main` and runs format, workspace test and check, clippy with
-warnings denied, rustdoc with warnings denied, `cargo deny check`, the
-foundation boundary self-test, and a declared-floor assertion. The local
-results in §7 are the only evidence recorded here; the first hosted run on the
-pushed `main` SHA is the confirming signal and is not claimed in advance.
+GitHub Actions run **37507965941**, workflow `Rust checks`, head
+`c94af33254068b192462abedf1c8805be1a8fa5c`, result **success**.
+
+Per-step results on that exact integrated head:
+
+| Step | Result |
+| --- | --- |
+| Formatting | success |
+| Workspace tests | success |
+| Workspace check | success |
+| Clippy (`-D warnings`) | success |
+| Rustdoc (`-D warnings`) | success |
+| Dependency policy (`cargo deny check`) | success |
+| Foundation boundary guard (`--self-test`) | success |
+| Declared toolchain floor | success |
+
+CI builds the pinned 1.89 toolchain rather than whichever `stable` is current,
+which is what makes the "declared floor" step meaningful rather than decorative.
+The local floor in §7 and this hosted run agree.
 
 ## 9. Post-integration `main` contents
 
