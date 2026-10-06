@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001 closed, M002 conditionally closed pending operational qualification, M003 active, M004/M005 blocked on external contracts
+Status: active; M001 and M003 closed, M002 conditionally closed pending operational qualification, M004/M005 blocked on external contracts
 
 Canonical authority:
 
@@ -81,14 +81,14 @@ Closure record: `plans/closure/torrent-client/002-status.md`. Live-router and co
 
 ## M003 — Transmission RPC compatibility
 
-Status: active.
+Status: closed.
 
 Plan:
 `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md`
 
 Build current + bounded legacy Transmission request/response translation over the native service. It is initially in-process/transport-independent.
 
-Exit: golden corpus and transmission-remote interoperability cover the declared method subset with truthful unsupported behavior.
+Exit: closed by `plans/closure/torrent-client/003-status.md`; inline golden current/legacy request fixtures and `transmission-remote` 4.1.3 interoperability cover the declared method subset with truthful unsupported behavior.
 
 ## M004 — i2pr managed-app integration
 

@@ -46,10 +46,10 @@ No clearnet fallback, direct host SAM connection, IP peer state, router identity
 
 ## Upstream and unblock audit
 
-The upstream was fetched again on 2026-10-06. `main` remains `144c54da2eaaa46497955e0e371f06ab6efcd1b1`; `codex/plan-345-native-app-runtime` remains `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Plans 354–355 provide private injected SAM/I2CP streams and the router principal gateway. AppManager/package/process work remains eligible but unregistered, and no torrent-facing `ReleaseTarget` or artifact staging/export contract exists.
+The upstream refs were freshly fetched and compared on 2026-10-06: `main` is `144c54da2eaaa46497955e0e371f06ab6efcd1b1`; `codex/plan-345-native-app-runtime` is `ea7b5ccef9bacbddf826f074cc59d891849a1424`. The authoritative main registry shows Plan 354 ready and Plan 355 blocked on 354; they do not yet provide a closed gateway integration. AppManager/package/process work remains future, unregistered work, and no torrent-facing `ReleaseTarget` or artifact staging/export contract exists. This fresh recheck supersedes the earlier same-day upstream summary in this record.
 
 - M003 can proceed: it depends on M001's frozen `TorrentService`, not M002.
-- M004 remains **blocked**: it requires M002 qualification and the unregistered managed-app/AppManager, local-ingress, and private persistent-data contracts.
+- M004 remains **blocked**: it requires M002 qualification, completion of upstream Plans 354/355, and the unregistered managed-app/AppManager, host-ingress, and private persistent-data contracts.
 - M005 remains **blocked**: it requires M002/M004 and router-owned release-target plus staging/export interfaces.
 - M006 remains deferred pending a stable production datagram/PRIMARY contract and a later spec recheck.
 

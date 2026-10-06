@@ -2,6 +2,10 @@
 
 Status: blocked on M002/M004 and router update interfaces
 
+## Upstream recheck (2026-10-06)
+
+Fetched upstream refs: `main` `144c54da2eaaa46497955e0e371f06ab6efcd1b1` and `codex/plan-345-native-app-runtime` `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Main still has Plan 354 ready and Plan 355 blocked, with AppManager/package lifecycle unregistered. Inspection of the upstream plans and tree found no router-owned torrent `ReleaseTarget`, private request/reply invocation, or artifact staging/export contract. M002 remains conditional and M004 blocked, so no M005 production integration can proceed. Recheck the exact refs and contracts before promotion.
+
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M005--router-update-artifact-transport`
 

@@ -1,6 +1,6 @@
 # Torrent Client M003 — Transmission RPC Compatibility
 
-Status: active
+Status: closed
 
 ## Contract recheck (2026-10-06)
 
@@ -79,4 +79,4 @@ Stop if compatibility requires changing canonical torrent state to Transmission-
 
 ## Closure evidence
 
-Create `plans/closure/torrent-client/003-status.md` with upstream RPC version/commit, method+field matrix, golden fixtures, transmission-remote version/results, request limits, restart/ID evidence, unsupported-feature matrix, and unblock notes for M004.
+Closure record: `plans/closure/torrent-client/003-status.md`.

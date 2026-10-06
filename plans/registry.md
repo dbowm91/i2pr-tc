@@ -18,7 +18,7 @@ This is the compact control surface for active planning. Canonical direction is 
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies/blockers |
 |---|---|---|---|---|
-| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M003 next | M001 closed; M002 conditionally closed pending live-router qualification. M003 is active on its independent M001 dependency. M004/M005 retain upstream interface blockers. |
+| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M004 blocked | M001 closed; M002 conditionally closed pending live-router qualification; M003 closed on M001. M004/M005 retain current upstream interface blockers. |
 
 ## Implementation handoffs
 
@@ -26,9 +26,9 @@ This is the compact control surface for active planning. Canonical direction is 
 |---|---|---|---|---|
 | Torrent client | M001 core protocol + storage foundation | **closed** | `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md` | Closure record: `plans/closure/torrent-client/001-status.md`; implementation commit `61ace427d7157e8f168d14a3bc8cc3501fd6492f`. |
 | Torrent client | M002 I2P streaming + trackers + magnet metadata + PEX | **conditionally closed** | `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md` | Closure record: `plans/closure/torrent-client/002-status.md`; implementation commit `cbb65d03635652896fa41132c06bf60324c14147`. Live-router, end-to-end magnet, inbound transfer, and reconnect qualification remain operationally outstanding. |
-| Torrent client | M003 Transmission RPC compatibility | **active** | `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md` | M001 freezes TorrentService; M003 is independent of M002 and now active. |
-| Torrent client | M004 i2pr managed-app integration | **blocked** | `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md` | M002 plus corrected/live i2pr app runtime, SAM gateway, local ingress, and persistent-data contract. |
-| Torrent client | M005 router update artifact transport | **blocked** | `plans/implementation/torrent-client/005-router-update-artifact-transport.md` | M002/M004 plus router-owned ReleaseTarget, private app invocation, and artifact staging/export. |
+| Torrent client | M003 Transmission RPC compatibility | **closed** | `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md` | Closure record: `plans/closure/torrent-client/003-status.md`; implementation commits `8c111cf59eaa54366caed8f72fd84347fd6bddba`, `85d95002ff01a82333f93ffe7178b007dd8c2689`. |
+| Torrent client | M004 i2pr managed-app integration | **blocked** | `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md` | M002 operational qualification plus upstream Plans 354/355 and unregistered AppManager/package/process, host ingress, and persistent-data owners. |
+| Torrent client | M005 router update artifact transport | **blocked** | `plans/implementation/torrent-client/005-router-update-artifact-transport.md` | M002/M004 plus no router-owned ReleaseTarget, private invocation, or artifact staging/export contract. |
 
 ## Deferred work
 
@@ -41,4 +41,4 @@ Frontend work is deferred until backend/RPC/managed-runtime boundaries are stabl
 Primary upstream:
 `dbowm91/i2pr:codex/plan-345-native-app-runtime`
 
-Latest inspected upstream head: `144c54da2eaaa46497955e0e371f06ab6efcd1b1` (`main`; rechecked 2026-10-06), with managed-runtime plan branch `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Plans 349 and 352–355 close the corrected v1 policy and router-side private SAM/I2CP gateway. The current registry still says AppManager/package/process work is eligible but not registered; process authentication/runtime, package lifecycle, and OS sandbox contracts are therefore still absent. The upstream tree still has no torrent-facing ReleaseTarget or artifact staging/export contract. M004 remains blocked on M002 and the unregistered managed-app contract; M005 remains blocked on M002/M004 and those router-owned update interfaces. Re-review the exact upstream head before any later promotion.
+Latest inspected upstream refs (2026-10-06): `main` is `144c54da2eaaa46497955e0e371f06ab6efcd1b1`; `codex/plan-345-native-app-runtime` is `ea7b5ccef9bacbddf826f074cc59d891849a1424`. The authoritative `main` registry has Plan 354 ready and Plan 355 blocked on 354; those gateway plans are not closed. The managed-app roadmap and Plan 355 explicitly leave process authentication/runtime, package lifecycle/AppManager, and OS sandbox implementation to a future unregistered owner. No host-owned ingress/private-persistent-data contract is available to this consumer, and the upstream tree has no torrent-facing `ReleaseTarget`, private invocation, or artifact staging/export contract. M004 remains blocked on M002 and those upstream interfaces; M005 remains blocked on M002/M004 and router-owned update interfaces. Recheck both refs and contract files before any later promotion.
