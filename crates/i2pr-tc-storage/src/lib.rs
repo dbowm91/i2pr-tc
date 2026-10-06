@@ -22,6 +22,8 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("invalid resume state")]
     Resume,
+    #[error("piece data does not match its expected hash")]
+    PieceHash,
 }
 
 pub struct Storage {
@@ -130,6 +132,23 @@ impl Storage {
             return Err(StorageError::Layout);
         }
         Ok(())
+    }
+
+    /// Verify piece bytes before writing them, so rejected data never reaches
+    /// storage and cannot be mistaken for a completed piece by its caller.
+    pub fn write_verified_piece(
+        &self,
+        files: &[TorrentFile],
+        piece_length: u32,
+        piece_index: u32,
+        bytes: &[u8],
+        expected_hash: [u8; 20],
+    ) -> Result<(), StorageError> {
+        let actual: [u8; 20] = Sha1::digest(bytes).into();
+        if actual != expected_hash {
+            return Err(StorageError::PieceHash);
+        }
+        self.write_piece(files, piece_length, piece_index, bytes)
     }
     pub fn read_piece(
         &self,
@@ -286,13 +305,17 @@ impl ResumeState {
         Ok(())
     }
     pub fn load_bounded(path: impl AsRef<Path>, max_bytes: u64) -> Result<Self, StorageError> {
-        let m = fs::metadata(path.as_ref())?;
-        if m.len() > max_bytes {
+        let file = File::open(path)?;
+        if file.metadata()?.len() > max_bytes {
             return Err(StorageError::Resume);
         }
-        let f = File::open(path)?;
-        let s: Self = serde_json::from_reader(f).map_err(|_| StorageError::Resume)?;
-        Ok(s)
+        let limit = max_bytes.checked_add(1).ok_or(StorageError::Resume)?;
+        let mut bytes = Vec::new();
+        file.take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(StorageError::Resume);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| StorageError::Resume)
     }
 }
 
@@ -328,13 +351,37 @@ mod tests {
             },
         ];
         s.prepare(&files).unwrap();
-        s.write_piece(&files, 4, 0, b"abcd").unwrap();
-        s.write_piece(&files, 4, 1, b"ef").unwrap();
+        let first_hash: [u8; 20] = Sha1::digest(b"abcd").into();
+        let second_hash: [u8; 20] = Sha1::digest(b"ef").into();
+        s.write_verified_piece(&files, 4, 0, b"abcd", first_hash)
+            .unwrap();
+        s.write_verified_piece(&files, 4, 1, b"ef", second_hash)
+            .unwrap();
         assert_eq!(s.read_piece(&files, 4, 0, 4).unwrap(), b"abcd");
         let hashes: [[u8; 20]; 2] = [Sha1::digest(b"abcd").into(), Sha1::digest(b"ef").into()];
         assert_eq!(s.recheck(&files, 4, &hashes).unwrap(), vec![true, true]);
         s.remove_data(&files).unwrap();
         assert!(!root.join("a").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bad_piece_hash_never_changes_existing_data() {
+        let root = temp_root();
+        let s = Storage::open(&root).unwrap();
+        let files = vec![TorrentFile {
+            path: vec!["payload".into()],
+            length: 4,
+        }];
+        s.prepare(&files).unwrap();
+        let valid = Sha1::digest(b"good").into();
+        s.write_verified_piece(&files, 4, 0, b"good", valid)
+            .unwrap();
+        assert!(matches!(
+            s.write_verified_piece(&files, 4, 0, b"evil", valid),
+            Err(StorageError::PieceHash)
+        ));
+        assert_eq!(s.read_piece(&files, 4, 0, 4).unwrap(), b"good");
         let _ = fs::remove_dir_all(root);
     }
     #[test]

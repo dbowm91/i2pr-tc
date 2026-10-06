@@ -50,6 +50,63 @@ pub enum WireError {
     Invalid,
     #[error("truncated frame")]
     Truncated,
+    #[error("frame decoder has not been configured with a positive bound")]
+    InvalidLimit,
+}
+
+/// Incremental stream decoder. It accepts fragmented or coalesced peer-wire
+/// frames while retaining at most one bounded frame between calls.
+pub struct FrameDecoder {
+    buffer: Vec<u8>,
+    expected: Option<usize>,
+    max_frame: usize,
+}
+
+impl FrameDecoder {
+    pub fn new(max_frame: usize) -> Result<Self, WireError> {
+        if max_frame == 0 {
+            return Err(WireError::InvalidLimit);
+        }
+        Ok(Self {
+            buffer: Vec::with_capacity(max_frame.min(16 * 1024) + 4),
+            expected: None,
+            max_frame,
+        })
+    }
+
+    pub fn feed(&mut self, mut input: &[u8]) -> Result<Vec<Message>, WireError> {
+        let mut messages = Vec::new();
+        while !input.is_empty() {
+            let target = self.expected.unwrap_or(4);
+            let take = (target - self.buffer.len()).min(input.len());
+            self.buffer.extend_from_slice(&input[..take]);
+            input = &input[take..];
+
+            if self.expected.is_none() && self.buffer.len() == 4 {
+                let length = u32::from_be_bytes(self.buffer[..4].try_into().unwrap()) as usize;
+                if length > self.max_frame {
+                    self.buffer.clear();
+                    return Err(WireError::Limit);
+                }
+                let total = length.checked_add(4).ok_or(WireError::Limit)?;
+                self.expected = Some(total);
+                if length == 0 {
+                    messages.push(Message::KeepAlive);
+                    self.buffer.clear();
+                    self.expected = None;
+                }
+            } else if self.expected == Some(self.buffer.len()) {
+                messages.push(parse_frame(&self.buffer, self.max_frame)?);
+                self.buffer.clear();
+                self.expected = None;
+            }
+        }
+        Ok(messages)
+    }
+
+    pub fn has_partial_frame(&self) -> bool {
+        !self.buffer.is_empty()
+    }
 }
 pub fn parse_handshake(b: &[u8]) -> Result<Handshake, WireError> {
     if b.len() != HANDSHAKE_LEN || b[0] != 19 || &b[1..20] != b"BitTorrent protocol" {
@@ -78,7 +135,7 @@ pub fn parse_frame(frame: &[u8], max: usize) -> Result<Message, WireError> {
     if n > max {
         return Err(WireError::Limit);
     }
-    if frame.len() != n + 4 {
+    if frame.len() != n.checked_add(4).ok_or(WireError::Limit)? {
         return Err(WireError::Truncated);
     }
     if n == 0 {
@@ -171,6 +228,27 @@ mod tests {
         );
         assert_eq!(parse_frame(&[0, 0, 0, 1], 1024), Err(WireError::Truncated));
         assert_eq!(parse_frame(&[0, 0, 0, 5, 5], 4), Err(WireError::Limit));
+    }
+
+    #[test]
+    fn incremental_decoder_handles_fragmented_and_coalesced_frames() {
+        let mut decoder = FrameDecoder::new(64).unwrap();
+        assert!(decoder.feed(&[0, 0]).unwrap().is_empty());
+        assert!(decoder.has_partial_frame());
+        assert!(decoder.feed(&[0, 1]).unwrap().is_empty());
+        assert!(decoder.has_partial_frame());
+        assert_eq!(
+            decoder.feed(&[0, 0, 0, 0, 1, 1, 0, 0, 0, 0]).unwrap(),
+            vec![Message::Choke, Message::Unchoke, Message::KeepAlive]
+        );
+        assert!(!decoder.has_partial_frame());
+    }
+
+    #[test]
+    fn incremental_decoder_rejects_declared_oversize_before_payload() {
+        let mut decoder = FrameDecoder::new(8).unwrap();
+        assert_eq!(decoder.feed(&[0, 0, 0, 9]), Err(WireError::Limit));
+        assert!(!decoder.has_partial_frame());
     }
     #[test]
     fn pex_uses_only_hash_sized_records() {
