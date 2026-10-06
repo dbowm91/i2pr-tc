@@ -14,6 +14,7 @@ This record captures the implementation checkpoint on `codex/planning-foundation
 - `15c1002` — added durable service state, bounded events/priorities, resume-root safety, cancellation, metadata bounds, boundary guards, and fuzz corpora.
 - `73cbc38` — made persistent progress depend on hash-verified storage writes and recovery-derived piece verification.
 - `a2d32af` — composed `PieceMap`, bounded block assembly, storage writes, startup recovery, and runtime fixtures; retained fuzz discoveries.
+- `762887a` — connected peer-wire session state to runtime availability, cancellation, download, and verified upload paths; bounded catalog reads and resume bitmaps.
 
 ## Landed scope
 
