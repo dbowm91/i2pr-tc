@@ -134,6 +134,10 @@ CI builds the pinned 1.89 toolchain rather than whichever `stable` is current,
 which is what makes the "declared floor" step meaningful rather than decorative.
 The local floor in §7 and this hosted run agree.
 
+The subsequent commit that added this evidence, `d10bc52`, was itself verified
+by run **37508577105** — **success** on `d10bc52d414abf42de3d0e4fca0844f774522312`.
+`main` therefore ends this reconciliation on a head with a passing hosted run.
+
 ## 9. Post-integration `main` contents
 
 - 26 Rust source files across four crates, plus two integration-test targets.
