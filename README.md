@@ -23,16 +23,16 @@ integration.
 | --- | --- | --- |
 | Core protocol | implemented | bencode, metainfo, magnet, BitTorrent v1 wire, extension protocol |
 | Storage | implemented | verified piece writes, per-torrent state ownership, generation-checked persistence, bounded blocking offload |
-| I2P transport | implemented, transcript-qualified | application-side SAM v3 client; **not yet qualified against a live router** |
+| I2P transport | corrective active | C001 SAM code retained; C003 is replacing the STREAM-only lifecycle with SAM 3.3 PRIMARY/subsessions and a real shared Destination identity |
 | Tracker announces | implemented | I2P-only tracker URLs, deterministic bounded retry |
 | Magnet metadata | implemented | `ut_metadata` acquisition, verification, and promotion |
 | PEX | implemented | bounded peer discovery and source deduplication |
 | Transmission RPC | implemented | request/response adapter over the local RPC surface |
-| Managed i2pr integration | **pending** | blocked on upstream AppManager/process ownership, sandbox containment, host-owned ingress, and private persistent-data semantics |
+| Managed i2pr integration | **blocked** | blocked on C003, upstream i2pr Plan 368 SAM 3.3 PRIMARY/subsessions, AppManager/process ownership, sandbox containment, host-owned ingress, and private persistent-data/key semantics |
 | Update transport | **planned, not implemented** | blocked on upstream router-owned release, invocation, and artifact contracts |
 
 Planning status lives in `plans/registry.md` and
-`plans/subsystems/torrent-client-roadmap.md` on the integration branch.
+`plans/subsystems/torrent-client-roadmap.md` on `main`.
 
 ## Architecture
 
@@ -42,28 +42,31 @@ Planning status lives in `plans/registry.md` and
 - `crates/i2pr-tc-storage` — verified storage, the durable torrent catalog,
   per-torrent runtime state, and the bounded blocking-work executor. This crate
   deliberately has no async runtime dependency.
-- `crates/i2pr-tc-i2p` — the I2P transport: a bounded SAM v3 client, tracker
-  announces, peer sessions, magnet metadata, and PEX.
+- `crates/i2pr-tc-i2p` — the I2P transport: retained bounded SAM client code,
+  tracker announces, peer sessions, magnet metadata, and PEX. C003 is the
+  current authority for converting the transport to SAM 3.3 PRIMARY/subsessions
+  with one shared Destination across STREAM and future DATAGRAM/RAW use.
 - `crates/i2pr-tc-transmission` — a Transmission RPC compatibility adapter.
 
-There is no host-network connector in the library surface. The I2P transport
-asks a caller-supplied factory for one raw SAM protocol byte stream and speaks
-SAM itself; the router side is reached only through that seam. A direct local
-connector exists solely in a declared test target for live qualification.
+There is no host-network connector in the production library surface. The I2P
+transport asks a caller-supplied factory for raw SAM protocol byte streams and
+speaks SAM itself; the router side is reached only through that seam. C003
+requires one long-lived primary/control stream plus child attachment streams,
+all sharing one Destination. A direct local connector exists solely in a
+declared test target for live qualification.
 
 ## Qualification boundaries
 
 - Protocol behaviour is covered by deterministic tests, including full magnet
   acquisition to completion and inbound peer transfer.
 - SAM protocol behaviour is covered by exact-octet transcript tests.
-- **Live-router interoperability has been run against i2pd 2.61.0.** `HELLO`
-  and `SESSION CREATE` qualify for both a transient and an injected-key
-  identity, and `NAMING LOOKUP NAME=ME` decodes a real 387-byte Destination.
-  Three cases remain unexecuted because each needs an input this repository
-  does not have: a registered `.i2p` name, a second peer running this client,
-  and a tracker announce URL. That run is also what surfaced four wire defects
-  the transcript tests could not, since every fixture had been written to match
-  this client's own assumptions.
+- Live-router qualification against i2pd 2.61.0 was useful but is **not final
+  transport qualification**. It proved HELLO/session/naming wire details and
+  exposed four self-consistent transcript defects, all retained as fixes.
+  Subsequent SAM/I2CP research found a deeper lifecycle issue: the final torrent
+  transport must hold one long-lived SAM 3.3 primary Destination and share it
+  across STREAM plus future DATAGRAM/RAW DHT channels. C003 and upstream i2pr
+  Plan 368 now own that qualification.
 - Tracker announces carry no `User-Agent`, and the peer extension handshake
   advertises no client version.
 
