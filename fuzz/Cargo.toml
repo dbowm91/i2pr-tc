@@ -35,6 +35,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "extension"
+path = "fuzz_targets/extension.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "resume"
 path = "fuzz_targets/resume.rs"
 test = false

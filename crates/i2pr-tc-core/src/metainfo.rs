@@ -1,5 +1,6 @@
 use crate::bencode::{self, Value};
 use sha1::{Digest, Sha1};
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -17,6 +18,7 @@ pub struct TorrentMeta {
     pub piece_hashes: Vec<[u8; 20]>,
     pub files: Vec<TorrentFile>,
     pub total_length: u64,
+    pub trackers: Vec<String>,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct MetaLimits {
@@ -26,6 +28,8 @@ pub struct MetaLimits {
     pub pieces: usize,
     pub total_bytes: u64,
     pub piece_length: u32,
+    pub announce_count: usize,
+    pub announce_bytes: usize,
 }
 impl Default for MetaLimits {
     fn default() -> Self {
@@ -36,6 +40,8 @@ impl Default for MetaLimits {
             pieces: 4_000_000,
             total_bytes: 1 << 50,
             piece_length: 16 * 1024 * 1024,
+            announce_count: 64,
+            announce_bytes: 2048,
         }
     }
 }
@@ -60,6 +66,7 @@ pub fn parse(input: &[u8], limits: MetaLimits) -> Result<TorrentMeta, MetaError>
             ..Default::default()
         },
     )?;
+    let trackers = parse_trackers(&root, input, limits)?;
     let info =
         bencode::dict_get(&root, input, b"info").ok_or(MetaError::Invalid("missing info"))?;
     let Value::Dict(fields) = info else {
@@ -147,6 +154,7 @@ pub fn parse(input: &[u8], limits: MetaLimits) -> Result<TorrentMeta, MetaError>
             })
             .collect::<Result<Vec<_>, MetaError>>()?
     };
+    validate_file_layout(&files)?;
     let total_length = files
         .iter()
         .try_fold(0u64, |a, f| a.checked_add(f.length))
@@ -170,7 +178,55 @@ pub fn parse(input: &[u8], limits: MetaLimits) -> Result<TorrentMeta, MetaError>
         piece_hashes,
         files,
         total_length,
+        trackers,
     })
+}
+
+fn parse_trackers(
+    root: &Value,
+    input: &[u8],
+    limits: MetaLimits,
+) -> Result<Vec<String>, MetaError> {
+    let mut trackers = Vec::new();
+    if let Some(announce) = bencode::dict_get(root, input, b"announce") {
+        push_tracker(announce, input, limits, &mut trackers)?;
+    }
+    if let Some(tiers) = bencode::dict_get(root, input, b"announce-list") {
+        let Value::List(tiers) = tiers else {
+            return Err(MetaError::Invalid("announce-list type"));
+        };
+        for tier in tiers {
+            let Value::List(entries) = tier else {
+                return Err(MetaError::Invalid("announce tier type"));
+            };
+            for entry in entries {
+                push_tracker(entry, input, limits, &mut trackers)?;
+            }
+        }
+    }
+    Ok(trackers)
+}
+
+fn push_tracker(
+    value: &Value,
+    input: &[u8],
+    limits: MetaLimits,
+    trackers: &mut Vec<String>,
+) -> Result<(), MetaError> {
+    let bytes = bencode::bytes(value, input).ok_or(MetaError::Invalid("announce URL type"))?;
+    if bytes.is_empty() || bytes.len() > limits.announce_bytes {
+        return Err(MetaError::Limit);
+    }
+    let tracker = std::str::from_utf8(bytes)
+        .map_err(|_| MetaError::Invalid("announce URL encoding"))?
+        .to_owned();
+    if !trackers.contains(&tracker) {
+        if trackers.len() >= limits.announce_count {
+            return Err(MetaError::Limit);
+        }
+        trackers.push(tracker);
+    }
+    Ok(())
 }
 fn encoded_value_end(input: &[u8], start: usize) -> Result<usize, MetaError> {
     let mut i = start;
@@ -236,17 +292,66 @@ fn text_field(v: &Value, k: &[u8], src: &[u8]) -> Result<String, MetaError> {
 fn valid_component(raw: &[u8]) -> Result<String, MetaError> {
     let s = std::str::from_utf8(raw).map_err(|_| MetaError::Invalid("path is not UTF-8"))?;
     if s.is_empty()
+        || s.len() > 255
         || s == "."
         || s == ".."
+        || s.ends_with('.')
+        || s.ends_with(' ')
         || s.contains('/')
         || s.contains('\\')
         || s.contains(':')
         || s.contains('\0')
         || s.starts_with('/')
+        || s.chars().any(|c| c.is_control() || "<>|?*\"".contains(c))
     {
         return Err(MetaError::Invalid("unsafe path component"));
     }
+    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(MetaError::Invalid("reserved path component"));
+    }
     Ok(s.to_owned())
+}
+
+fn validate_file_layout(files: &[TorrentFile]) -> Result<(), MetaError> {
+    let mut paths = BTreeSet::new();
+    let mut portable_paths = BTreeSet::new();
+    for file in files {
+        if !paths.insert(file.path.clone()) {
+            return Err(MetaError::Invalid("duplicate file path"));
+        }
+        let portable: Vec<String> = file.path.iter().map(|part| part.to_lowercase()).collect();
+        if !portable_paths.insert(portable.clone()) {
+            return Err(MetaError::Invalid("case-colliding file path"));
+        }
+        for depth in 1..file.path.len() {
+            if paths.contains(&file.path[..depth]) || portable_paths.contains(&portable[..depth]) {
+                return Err(MetaError::Invalid("file path is also a directory"));
+            }
+        }
+    }
+    for path in &paths {
+        if paths
+            .range(path.clone()..)
+            .nth(1)
+            .is_some_and(|next| next.starts_with(path))
+        {
+            return Err(MetaError::Invalid("file path contains another file"));
+        }
+        let portable: Vec<String> = path.iter().map(|part| part.to_lowercase()).collect();
+        if portable_paths
+            .range(portable.clone()..)
+            .nth(1)
+            .is_some_and(|next| next.starts_with(&portable))
+        {
+            return Err(MetaError::Invalid("case-colliding file directory"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -262,6 +367,7 @@ mod tests {
         let mut h = Sha1::new();
         h.update(&data[start..data.len() - 1]);
         assert_eq!(meta.info_hash.0, <[u8; 20]>::from(h.finalize()));
+        assert!(meta.trackers.is_empty());
     }
     #[test]
     fn rejects_unsafe_paths_and_wrong_piece_count() {
@@ -273,5 +379,43 @@ mod tests {
         bad.extend([0u8; 20]);
         bad.extend_from_slice(b"ee");
         assert!(parse(&bad, MetaLimits::default()).is_err());
+        for name in [b"CON".as_slice(), b"trailing.".as_slice(), b"bad?name"] {
+            let mut data = format!("d4:infod6:lengthi1e4:name{}:", name.len()).into_bytes();
+            data.extend_from_slice(name);
+            data.extend_from_slice(b"12:piece lengthi1e6:pieces20:");
+            data.extend([0u8; 20]);
+            data.extend_from_slice(b"ee");
+            assert!(parse(&data, MetaLimits::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_files_and_file_directory_collisions() {
+        let file = |path: &[&str]| TorrentFile {
+            path: path.iter().map(|part| (*part).to_owned()).collect(),
+            length: 1,
+        };
+        assert!(validate_file_layout(&[file(&["root", "a"]), file(&["root", "a"])]).is_err());
+        assert!(
+            validate_file_layout(&[file(&["root", "a"]), file(&["root", "a", "child"])]).is_err()
+        );
+        assert!(
+            validate_file_layout(&[file(&["root", "a", "child"]), file(&["root", "a"])]).is_err()
+        );
+        assert!(validate_file_layout(&[file(&["root", "A"]), file(&["root", "a"])]).is_err());
+    }
+
+    #[test]
+    fn retains_bounded_deduplicated_announce_tiers() {
+        let mut data = b"d8:announce14:http://a.i2p/a13:announce-listll14:http://a.i2p/a14:http://b.i2p/bee4:infod6:lengthi1e4:name1:x12:piece lengthi1e6:pieces20:".to_vec();
+        data.extend([0u8; 20]);
+        data.extend_from_slice(b"ee");
+        let parsed = parse(&data, MetaLimits::default()).unwrap();
+        assert_eq!(parsed.trackers, ["http://a.i2p/a", "http://b.i2p/b"]);
+        let limits = MetaLimits {
+            announce_count: 1,
+            ..MetaLimits::default()
+        };
+        assert!(matches!(parse(&data, limits), Err(MetaError::Limit)));
     }
 }

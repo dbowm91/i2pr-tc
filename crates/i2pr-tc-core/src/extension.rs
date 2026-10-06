@@ -53,10 +53,16 @@ pub fn parse_ut_metadata(
     if limits.block_size == 0 || payload.len() > max_payload {
         return Err(ExtensionError::Limit);
     }
+    let header_cap = limits
+        .encoded_header
+        .checked_add(1)
+        .ok_or(ExtensionError::Limit)?
+        .min(payload.len());
+    let header_input = &payload[..header_cap];
     let (header, used) = bencode::parse_prefix(
-        payload,
+        header_input,
         bencode::Limits {
-            input: limits.encoded_header,
+            input: header_input.len(),
             ..Default::default()
         },
     )
@@ -97,7 +103,11 @@ pub fn parse_ut_metadata(
             let start = (piece as u64)
                 .checked_mul(limits.block_size as u64)
                 .ok_or(ExtensionError::Limit)?;
-            if start >= total as u64 || block.len() as u64 > (total as u64 - start) {
+            if start >= total as u64 {
+                return Err(ExtensionError::Invalid);
+            }
+            let expected = (total as u64 - start).min(limits.block_size as u64);
+            if block.len() as u64 != expected {
                 return Err(ExtensionError::Invalid);
             }
             Ok(UtMetadata::Data {
@@ -172,5 +182,24 @@ mod tests {
             parse_ut_metadata(bad, MetadataLimits::default()),
             Err(ExtensionError::Invalid)
         );
+        let mut short_nonfinal = b"d8:msg_typei1e5:piecei0e10:total_sizei6ee".to_vec();
+        short_nonfinal.extend_from_slice(b"abc");
+        assert_eq!(
+            parse_ut_metadata(
+                &short_nonfinal,
+                MetadataLimits {
+                    total_size: 16,
+                    block_size: 4,
+                    encoded_header: 128,
+                }
+            ),
+            Err(ExtensionError::Invalid)
+        );
+        let mut large_valid = b"d8:msg_typei1e5:piecei0e10:total_sizei1500ee".to_vec();
+        large_valid.extend(vec![0x5a; 1500]);
+        assert!(matches!(
+            parse_ut_metadata(&large_valid, MetadataLimits::default()),
+            Ok(UtMetadata::Data { block, .. }) if block.len() == 1500
+        ));
     }
 }

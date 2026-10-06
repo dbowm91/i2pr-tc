@@ -2,3 +2,6 @@
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/corpus/
+!/fuzz/corpus/
+!/fuzz/corpus/*/
+!/fuzz/corpus/*/*
