@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001 and M003 closed, M002 conditionally closed pending operational qualification, M004/M005 blocked on external contracts
+Status: active; M001 and M003 closed, historical M002 conditionally closed, M002 C001 ready, C002/M004/M005 blocked
 
 Canonical authority:
 
@@ -20,7 +20,7 @@ Initial repository baseline:
 
 Build the smallest reliable I2P-native torrent backend that can be independently tested, then integrate it with i2pr without moving router authority into the app.
 
-i2pr-tc owns torrent parsing/state/storage, I2P torrent discovery/peer protocol, native torrent service semantics, Transmission translation, and bounded artifact transport.
+i2pr-tc owns torrent parsing/state/storage, application-side SAM client behavior, I2P torrent discovery/peer protocol, native torrent service semantics, Transmission translation, and bounded artifact transport.
 
 It does not own i2pr sandboxing, general network policy, router identity, Proposal 170 administrator authority, update trust/installation, or frontend state.
 
@@ -29,31 +29,39 @@ It does not own i2pr sandboxing, general network policy, router identity, Propos
 1. Managed production networking is I2P-only.
 2. Canonical peer state is not IP SocketAddr state.
 3. Exact raw `info` bytes determine v1 infohash.
-4. Peer/tracker/metainfo/RPC/resume input is bounded before allocation.
+4. Peer/tracker/metainfo/RPC/resume/SAM input is bounded before allocation.
 5. Torrent mutable state has one clear owner per torrent.
-6. Resume state is advisory and cannot override hash/file truth.
-7. Cancellation and restart are explicit at every I/O boundary.
-8. Transmission names are not persisted domain authority.
-9. Managed app integration never requires direct host networking.
-10. Torrent update transport cannot install or authenticate releases.
+6. Blocking filesystem work does not execute under global torrent-state ownership or directly on async peer workers without bounded offload.
+7. Resume state is advisory and cannot override hash/file truth.
+8. Cancellation and restart are explicit at every I/O boundary.
+9. Transmission names are not persisted domain authority.
+10. Managed app integration never requires direct host networking.
+11. Raw managed-app SAM streams remain generic router protocol streams; torrent-specific lookup/connect/accept semantics stay application-side.
+12. Torrent update transport cannot install or authenticate releases.
 
 ## Dependency graph
 
 ```text
-M001 core protocol/storage
+M001 core protocol/storage (closed)
    |\
-   | +------> M003 Transmission RPC
+   | +------> M003 Transmission RPC (closed)
    |
-   +--------> M002 I2P streaming/trackers/PEX
+   +--------> M002 I2P streaming/trackers/PEX (historically conditionally closed)
                  |
-                 +------> M004 managed-app integration
-                 |           |
-                 |           +------> M005 router update transport
-                 |
-                 +------> future M006 datagram trackers/DHT
+                 +------> C001 SAM/runtime/live-transport corrective (ready)
+                              |\
+                              | +----> C002 foundation branch reconciliation
+                              |
+                              +------> M004 managed-app integration
+                                          |
+                                          +------> M005 router update transport
+
+future M006 datagram trackers/DHT remains deferred
 ```
 
-M003 can begin after M001 freezes TorrentService and may proceed in parallel with M002.
+Historical milestone closure is not rewritten when a corrective is found. C001
+adds forward evidence and determines whether M002's remaining operational
+qualification is satisfied.
 
 ## M001 — Core protocol and storage foundation
 
@@ -62,22 +70,57 @@ Status: closed.
 Plan:
 `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md`
 
-Create the Rust workspace and deterministic BitTorrent v1 core with no network dependency. Freeze native types/services needed by later transport and RPC work.
+Closure:
+`plans/closure/torrent-client/001-status.md`
 
-Exit: fixtures prove metainfo/infohash/path correctness, peer-wire/extension codecs are bounded, storage can write/recheck/resume, and state survives restart without trusting stale resume data.
+M001 provides strict BitTorrent v1 parsing/infohashing, peer-wire/extension
+codecs, verified storage/recovery, durable TorrentService state, cancellation,
+fuzzing, and dependency-boundary enforcement.
 
 ## M002 — I2P streaming trackers and PEX
 
-Status: conditionally closed.
+Status: historically conditionally closed.
 
 Plan:
 `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md`
 
-Add injected SAM transport, long-lived I2P session semantics, HTTP I2P trackers, inbound/outbound peers, magnet metadata, multi-tracker fallback, and i2p_pex. No datagram/DHT dependency.
+Historical closure:
+`plans/closure/torrent-client/002-status.md`
 
-Exit: qualified swarms transfer data using only I2P address semantics and recover across tracker/peer/router disconnects.
+M002 added the injected `I2pSession`, I2P identities, tracker client,
+inbound/outbound peer handling, magnet metadata, PEX, retry/backoff, and
+scripted transfer evidence. The closure explicitly left live-router, full
+magnet, inbound transfer, and reconnect qualification outstanding.
 
-Closure record: `plans/closure/torrent-client/002-status.md`. Live-router and complete swarm/reconnect qualification remains operationally outstanding.
+Post-closure review additionally found that the current `I2pSession` stops
+above the raw SAM protocol boundary now frozen by i2pr Plans 354/355, tracker
+HTTP exposes a versioned `i2pr-tc/0.1` User-Agent, and runtime piece
+persistence can hold global state ownership across synchronous storage work.
+
+Those findings are owned by C001; do not rewrite the historical M002 record.
+
+## M002 C001 — SAM client boundary, runtime I/O, and live-transport hardening
+
+Status: ready.
+
+Plan:
+`plans/implementation/torrent-client/006-m002-c001-sam-runtime-hardening.md`
+
+C001 must:
+
+- implement the application-side SAM-v3 client over a raw SAM connection
+  factory compatible with i2pr's managed-app service-stream contract;
+- preserve the current high-level `I2pSession` as a useful transport-facing
+  API/test seam rather than making i2pr implement torrent-specific operations;
+- remove version-specific tracker HTTP fingerprinting;
+- move blocking filesystem/hash/write work outside global/per-torrent critical
+  sections and off async worker paths with bounded backpressure;
+- prove race-safe persistence completion;
+- add full magnet/inbound deterministic cases and live Java I2P/available
+  alternate-router interoperability evidence where feasible.
+
+Exit: the I2P transport is composition-ready for M004 without a direct host SAM
+fallback or a torrent-specific router gateway.
 
 ## M003 — Transmission RPC compatibility
 
@@ -86,9 +129,23 @@ Status: closed.
 Plan:
 `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md`
 
-Build current + bounded legacy Transmission request/response translation over the native service. It is initially in-process/transport-independent.
+Closure:
+`plans/closure/torrent-client/003-status.md`
 
-Exit: closed by `plans/closure/torrent-client/003-status.md`; inline golden current/legacy request fixtures and `transmission-remote` 4.1.3 interoperability cover the declared method subset with truthful unsupported behavior.
+The current/legacy adapter remains transport-independent and owns no production
+listener. M004 will supply host-owned ingress.
+
+## C002 — Planning, documentation, MSRV, and branch integration reconciliation
+
+Status: blocked on C001 closure.
+
+Plan:
+`plans/implementation/torrent-client/007-c002-foundation-branch-reconciliation.md`
+
+C002 updates README/planning to the implemented state, records an explicit Rust
+MSRV/edition policy, rechecks current upstream managed-app ownership, verifies
+the exact integration head, and integrates the foundational work line into
+`main` without rewriting historical closure evidence.
 
 ## M004 — i2pr managed-app integration
 
@@ -97,15 +154,20 @@ Status: blocked.
 Plan:
 `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`
 
-Hard/interface blockers:
+Current blocker interpretation after the 2026-10-06 upstream recheck:
 
-- M002 closure;
-- current i2pr managed-app corrective/successors;
-- production app-scoped SAM gateway;
-- host-owned local-service ingress;
-- private persistent app-data semantics.
+- i2pr Plans 354 and 355 are closed and provide the private raw SAM/I2CP
+  connection seams plus router app-principal capability gateway;
+- C001 must first supply/qualify the application-side raw-SAM client and
+  transport hardening;
+- AppManager/package/process lifecycle and process authentication remain
+  unregistered/unimplemented upstream;
+- OS sandbox/resource containment remains future work;
+- host-owned local Transmission ingress remains unavailable;
+- private persistent app-data semantics remain unavailable.
 
-M003 is a soft dependency for exposing Transmission ingress but not for proving SAM launch.
+M003's RPC adapter is already closed; its production publication still waits on
+host-owned ingress.
 
 ## M005 — Router update artifact transport
 
@@ -116,25 +178,39 @@ Plan:
 
 Hard/interface blockers:
 
-- M002 and M004 closure;
+- M004 closure;
 - router-owned normalized ReleaseTarget/update authority;
 - private host-to-app invocation;
 - capability-mediated artifact staging/export.
+
+The torrent app remains transport only and may not absorb these router trust
+owners.
 
 ## Future M006 — datagram trackers and DHT
 
 Status: deferred; no handoff plan.
 
-Wait for a stable production SAM datagram/PRIMARY/subsession contract, M002 interoperability evidence, and current I2P UDP announce/DHT spec re-review. Do not introduce conventional IP DHT/UDP as an interim substitute.
+Wait for the streaming/SAM corrective to close, a stable production SAM
+datagram/PRIMARY/subsession contract, and a fresh I2P UDP announce/DHT spec
+review. Do not introduce conventional IP DHT/UDP as an interim substitute.
 
 ## Verification strategy
 
-Every implemented milestone adds unit/property tests, fuzz targets for hostile codecs, restart/crash fixtures, cancellation/backpressure tests, static dependency/ownership guards, and an interoperability corpus where an external protocol is claimed.
+Every implemented milestone/corrective adds unit/property tests, fuzz targets
+for hostile codecs, restart/crash fixtures, cancellation/backpressure tests,
+static dependency/ownership guards, and an interoperability corpus where an
+external protocol is claimed.
 
-M002/M004/M005 require negative evidence that clearnet/direct-host networking is not required.
+C001/M004/M005 require negative evidence that clearnet/direct-host networking
+is not required. C001 additionally requires concurrency evidence proving disk
+work does not globally serialize unrelated torrent state.
 
 ## Completion definition
 
-The foundational workstream closes when M001-M005 are closed and the backend can operate as a secured i2pr managed app, expose its declared Transmission-compatible surface, and serve as a bounded router-update artifact transport without acquiring update authority.
+The foundational workstream closes when C001/C002 and M004/M005 are closed,
+the implementation is integrated to the default branch, and the backend can
+operate as a secured i2pr managed app, expose its declared
+Transmission-compatible surface, and serve as a bounded router-update artifact
+transport without acquiring update authority.
 
 Frontend work and future M006 are not required for foundational closure.
