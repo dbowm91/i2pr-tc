@@ -5,3 +5,6 @@
 !/fuzz/corpus/
 !/fuzz/corpus/*/
 !/fuzz/corpus/*/*
+
+# Machine-specific filesystem state
+.DS_Store

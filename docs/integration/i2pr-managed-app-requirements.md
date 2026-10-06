@@ -1,10 +1,16 @@
 # i2pr Managed-App Integration Requirements for i2pr-tc
 
-Status: interface requirements; not claims that current i2pr implements them
+Status: interface requirements. Sections 1-2 are now implemented upstream;
+sections 3-5 remain open. Nothing here claims i2pr-tc can launch yet.
 
-Upstream line reviewed: `dbowm91/i2pr:codex/plan-345-native-app-runtime`.
+Upstream line reviewed: `dbowm91/i2pr` `main` at
+`144c54da2eaaa46497955e0e371f06ab6efcd1b1` (2026-10-06).
 
-The current managed-app contract is intentionally pre-runtime. These requirements identify the minimum successor surfaces needed by i2pr-tc without weakening ADR 0032.
+i2pr Plans 354 and 355 are closed upstream. They establish the transport seam
+this document's section 1 needs: one successful `open(service=sam)` binds one
+logical stream to exactly one router-owned SAM protocol connection, and each
+data-frame payload is passed as the exact protocol octets, in order. Remaining
+requirements are what the closed plans deliberately did not provide.
 
 ## 1. SAM capability stream
 
@@ -19,7 +25,15 @@ Requirements:
 - reconnect/cancellation/backpressure are representable;
 - the app's I2P Destination is not router identity.
 
-i2pr-tc should implement SAM over generic injected async byte streams so this adapter does not require a torrent-specific router protocol.
+Implemented. `i2pr-tc` speaks SAM over a generic injected async byte stream via
+`i2pr_tc_i2p::sam::SamConnectionFactory`, so no torrent-specific router protocol
+is required and no router type is named anywhere in this repository. Because the
+app never learns a router vocabulary, the production obligation it states is
+the weaker one — "give me one raw SAM protocol byte stream" — which any
+implementation of the upstream contract necessarily satisfies.
+
+Not yet done: qualifying that client against a live router. This is the first
+act of M004, not a claim this repository makes today.
 
 ## 2. Published local service ingress
 
@@ -66,8 +80,14 @@ Whichever design i2pr selects must bind resource ownership to app/request, apply
 
 ## 6. Dependency status
 
-i2pr-tc M004 remains blocked until the production SAM gateway, local ingress, and persistent-data semantics are stable enough for a real secured launch.
+The SAM transport seam is closed upstream and the application side is
+implemented in i2pr-tc. M004 remains blocked on the narrower owners that Plans
+354/355 deliberately left open: AppManager package and process ownership and
+process authentication, OS sandbox and resource containment, host-owned local
+RPC ingress, and private persistent-data semantics.
 
-M005 additionally waits on private host-to-app invocation and artifact handoff plus the router's ReleaseTarget/update-authority contract.
+M005 additionally waits on private host-to-app invocation and artifact handoff
+plus the router's ReleaseTarget/update-authority contract, none of which exist
+upstream today.
 
 These blockers must not be bypassed with `UnsafeDirect` as the default production profile.

@@ -1,0 +1,5 @@
+# Pinned so CI and every contributor build the declared floor, not whatever
+# `stable` happens to be on the day. See the workspace `rust-version`.
+[toolchain]
+channel = "1.89"
+components = ["rustfmt", "clippy"]

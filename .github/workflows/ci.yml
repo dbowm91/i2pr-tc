@@ -12,8 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Uses the pinned `rust-toolchain.toml`, so CI proves the declared floor
+      # rather than whatever `stable` happens to be.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.89
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Formatting
@@ -34,3 +37,9 @@ jobs:
           cargo deny check
       - name: Foundation boundary guard
         run: python3 scripts/check-foundation-boundaries.py --self-test
+      - name: Declared toolchain floor
+        run: |
+          rustc --version
+          cargo metadata --format-version 1 --no-deps \
+            | grep -q '"rust_version":"1.89"' \
+            || { echo "workspace floor is not the declared 1.89"; exit 1; }

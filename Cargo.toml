@@ -4,9 +4,13 @@ members = ["crates/i2pr-tc-core", "crates/i2pr-tc-storage", "crates/i2pr-tc-i2p"
 exclude = ["fuzz"]
 
 [workspace.package]
-edition = "2021"
+# Deliberate toolchain policy: i2pr-tc is built by the same line as the router,
+# so it shares the router's floor rather than carrying an independent, lower one.
+# A lower floor would buy nothing here: there is no downstream consumer that
+# cannot also build the router, and an undeclared floor only hides drift.
+edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.80"
+rust-version = "1.89"
 
 [workspace.dependencies]
 sha1 = "0.10"

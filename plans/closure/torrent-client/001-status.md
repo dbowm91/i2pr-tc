@@ -72,3 +72,12 @@ Since commit `d5b4539`, M001 scheduler work replaced additive peer availability 
 ## Closure recommendation
 
 **Close M001.** The implementation and required verification gates now satisfy its bounded core/storage objective. Record the non-race-free standard-path limitation as a low-severity local-root finding, and promote only M002 and M003 to `ready`. Keep M004/M005 blocked on upstream-owned contracts.
+
+## Editorial annotation (added during C002 reconciliation)
+
+The invocation recorded above contains a machine-specific absolute toolchain
+path from the machine that ran the fuzz qualification. That path is not
+reproducible elsewhere and must not be read as a requirement. The reproducible
+part of the invocation is `cargo fuzz run <target> -- -runs=10000`, and
+fuzzing is now exercised in CI's workspace build plus the checked-in seed
+corpus. The recorded finding itself is unchanged.

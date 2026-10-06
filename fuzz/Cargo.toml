@@ -2,7 +2,10 @@
 name = "i2pr-tc-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2021"
+# The fuzz crate is excluded from the workspace, so it states the same floor
+# explicitly rather than inheriting one.
+edition = "2024"
+rust-version = "1.89"
 
 [package.metadata]
 cargo-fuzz = true
