@@ -1,10 +1,20 @@
 # Torrent Client M004 — i2pr Managed-App Integration
 
-Status: blocked on M002 operational qualification and missing upstream app-runtime interfaces
+Status: blocked on missing upstream app-runtime interfaces
 
-## Upstream recheck (2026-10-06)
+## Upstream recheck (2026-10-06, updated 2026-10-07)
 
-Fetched upstream refs: `main` `144c54da2eaaa46497955e0e371f06ab6efcd1b1` and `codex/plan-345-native-app-runtime` `ea7b5ccef9bacbddf826f074cc59d891849a1424`. The authoritative main registry shows Plan 354 ready and Plan 355 blocked on 354; neither is closed. The managed-app roadmap says package/lifecycle/AppManager ownership remains a future unregistered milestone. No host-owned app ingress or private persistent-data contract is exposed to this consumer. Together with M002's outstanding live-router, full metadata-exchange, inbound-transfer, and reconnect qualification, these keep M004 blocked. Recheck upstream before promotion.
+Fetched upstream refs: `main` `144c54da2eaaa46497955e0e371f06ab6efcd1b1` and `codex/plan-345-native-app-runtime` `ea7b5ccef9bacbddf826f074cc59d891849a1424`. The authoritative main registry shows Plan 354 ready and Plan 355 blocked on 354; neither is closed. The managed-app roadmap says package/lifecycle/AppManager ownership remains a future unregistered milestone. No host-owned app ingress or private persistent-data contract is exposed to this consumer. Together with the missing upstream interfaces, these keep M004 blocked. Recheck upstream before promotion.
+
+**Updated 2026-10-07.** This plan previously also cited M002's outstanding
+operational qualification. That is no longer a blocker: the full magnet,
+inbound-transfer, and live-router cases all pass, the live-router matrix has
+been run against i2pd 2.61.0, and the four wire defects it found are fixed. Three
+live cases remain unexecuted — a registered `.i2p` name, a second peer running
+this client, and a tracker announce URL — and M004's integration environment is
+what supplies those. The residual M002 item M004 still owns is a production
+decision on injecting and persisting SAM key material, because a transient
+identity is per-connection and can be neither dialled nor persisted.
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M004--i2pr-managed-app-integration`

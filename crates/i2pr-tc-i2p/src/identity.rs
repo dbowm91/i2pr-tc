@@ -121,13 +121,14 @@ pub fn validate_i2p_hostname(host: &str) -> Result<(), TransportError> {
         return Ok(());
     }
     // A raw base64 Destination may appear as a tracker hostname. Its binary
-    // parsing is delegated to the router naming adapter, but the token must
-    // be base64-shaped and cannot contain authority delimiters.
+    // parsing is delegated to the router naming adapter, but the token must be
+    // base64-shaped and cannot contain authority delimiters. The alphabet is
+    // I2P's, so `-` and `~` belong here and `+` and `/` do not.
     let destination = host.strip_suffix(".i2p").unwrap_or(host);
     if destination.len() >= 516
-        && destination.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
-        })
+        && destination
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'~' | b'='))
     {
         return Ok(());
     }

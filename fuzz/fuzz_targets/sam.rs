@@ -5,7 +5,7 @@
 //! `parse_reply_block` and a reply's `DESTINATION=` value reaches
 //! `decode_base64`. The invariant under test is that neither can panic, abort,
 //! or allocate without a bound, whatever bytes arrive.
-use i2pr_tc_i2p::sam::{decode_base64, parse_reply_block, SamLimits};
+use i2pr_tc_i2p::sam::{decode_base64, encode_base64, parse_reply_block, SamLimits};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -17,20 +17,33 @@ fuzz_target!(|data: &[u8]| {
             // retained or partially applied.
             continue;
         };
-        for key in ["DESTINATION", "ME", "VERSION", "SESSION_ID"] {
+        for key in ["VALUE", "DESTINATION", "NAME", "VERSION"] {
             let _ = reply.option(key);
         }
         let _ = reply.kind();
         let _ = reply.result();
-        let _ = reply.destination("DESTINATION");
+        let _ = reply.destination("VALUE");
     }
 
     // Decode under both the destination bound and a deliberately small one.
-    let max = u16::from_le_bytes([data.get(0).copied().unwrap_or(1), data.get(1).copied().unwrap_or(0)])
-        as usize
+    let max = u16::from_le_bytes([
+        data.get(0).copied().unwrap_or(1),
+        data.get(1).copied().unwrap_or(0),
+    ]) as usize
         + 1;
     if let Ok(bytes) = decode_base64(data, max) {
         // A decoded value can never exceed the bound it was given.
         assert!(bytes.len() <= max, "decode_base64 exceeded its bound");
+    }
+
+    // Whatever survives a decode must re-encode to exactly one spelling: an
+    // encoder that could emit more than one form would let two peers disagree
+    // about the same Destination.
+    if let Ok(bytes) = decode_base64(data, max) {
+        assert_eq!(
+            decode_base64(encode_base64(&bytes).as_bytes(), max).ok(),
+            Some(bytes),
+            "base64 did not round-trip",
+        );
     }
 });

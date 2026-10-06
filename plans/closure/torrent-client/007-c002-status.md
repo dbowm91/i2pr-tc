@@ -153,9 +153,10 @@ before.** What changed:
 - the application side of the managed-app SAM contract is implemented and
   transcript-tested, so the transport is no longer a blocker;
 - M004 now owns composing `SamConnectionFactory` from the managed runtime;
-- M004's first act is running the live interoperability matrix in the C001
-  closure against a real Java I2P or i2pd SAM bridge, which is the medium
-  residual finding carried forward.
+- the live interoperability matrix recorded in the C001 closure has since been
+  run against i2pd 2.61.0, and the four wire defects it found are fixed. What
+  remains is the three cases that each need a registered `.i2p` name, a second
+  peer, and a tracker announce URL.
 
 What still blocks M004, none of it owned by this repository:
 
@@ -172,5 +173,6 @@ and artifact staging/export contracts, none of which exist upstream.
 production SAM datagram/PRIMARY/subsession contract, which is what M006 would
 need.
 
-The eligible next plan is therefore **M004**, and its first work package should
-be live-router qualification rather than any new implementation.
+The eligible next plan is therefore **M004**. Its first work package is no
+longer live-router qualification, which is done; it is the three remaining
+cases of that matrix plus the managed-app composition.

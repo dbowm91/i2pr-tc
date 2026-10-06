@@ -17,6 +17,16 @@
 //! `STREAM ACCEPT`) before its remaining bytes are raw peer data. Forwarding
 //! sockets is deliberately not implemented: it is unavailable in the managed
 //! profile and is not required by the torrent transport.
+//!
+//! Three wire details here are not negotiable and were all established by
+//! qualifying this client against a real SAM bridge, not by reading a spec.
+//! `SESSION CREATE` carries a mandatory `DESTINATION=` parameter, because a
+//! real service answers the command without one with `INVALID_KEY`. Every
+//! base64 value uses I2P's substitution alphabet, in which `-` and `~` stand
+//! where the standard alphabet puts `+` and `/`; a standard-alphabet value is
+//! rejected rather than decoded. And the reply keys differ per command:
+//! `NAMING REPLY` carries the Destination under `VALUE`, while `STREAM ACCEPT`
+//! reports the connecting peer as a bare line with no option key at all.
 #![forbid(unsafe_code)]
 
 use crate::{I2pSession, I2pStream, TransportError, identity};
@@ -36,6 +46,14 @@ const MIN_DESTINATION_BYTES: usize = 387;
 const MAX_DESTINATION_BYTES: usize = 8192;
 /// Bound on a command token (session identifier or naming lookup name).
 const MAX_COMMAND_TOKEN_BYTES: usize = 512;
+/// Bound on a `SESSION CREATE` `DESTINATION=` value. A real service's key
+/// material runs to a few hundred bytes and the certificate length is its own
+/// business; this bound exists only to keep one command line finite.
+const MAX_SESSION_KEYS_TOKEN_BYTES: usize = 16 * 1024;
+/// Size of the key material a real service returns from a transient
+/// `SESSION CREATE`, used only to shape test fixtures.
+#[cfg(test)]
+const SESSION_KEYS_BYTES: usize = 663;
 /// Cancellation poll granularity for cancellable operations.
 const CANCELLATION_POLL: Duration = Duration::from_millis(20);
 /// Wait granularity while draining in-flight work during [`SamClient::close`].
@@ -294,20 +312,25 @@ impl SamReply {
 
     /// Decodes a base64 Destination option into a verified Destination.
     pub fn destination(&self, key: &'static str) -> Result<identity::Destination, SamError> {
-        let value = self.option(key).ok_or(SamError::Missing(key))?;
-        // A destination that is merely too large stays a limit violation; a
-        // destination that is not base64 at all is a protocol violation.
-        let bytes = match decode_base64(value.as_bytes(), MAX_DESTINATION_BYTES) {
-            Ok(bytes) => bytes,
-            Err(SamError::Limit) => return Err(SamError::Limit),
-            Err(_) => return Err(SamError::Protocol("SAM destination is not decodable")),
-        };
-        if !(MIN_DESTINATION_BYTES..=MAX_DESTINATION_BYTES).contains(&bytes.len()) {
-            return Err(SamError::Protocol("SAM destination length out of range"));
-        }
-        identity::Destination::from_bytes(bytes)
-            .map_err(|_| SamError::Protocol("SAM destination is not addressable"))
+        decode_destination(self.option(key).ok_or(SamError::Missing(key))?)
     }
+}
+
+/// Decodes and verifies one Destination carried as base64.
+///
+/// A destination that is merely too large stays a limit violation; a
+/// destination that is not base64 at all is a protocol violation.
+fn decode_destination(value: &str) -> Result<identity::Destination, SamError> {
+    let bytes = match decode_base64(value.as_bytes(), MAX_DESTINATION_BYTES) {
+        Ok(bytes) => bytes,
+        Err(SamError::Limit) => return Err(SamError::Limit),
+        Err(_) => return Err(SamError::Protocol("SAM destination is not decodable")),
+    };
+    if !(MIN_DESTINATION_BYTES..=MAX_DESTINATION_BYTES).contains(&bytes.len()) {
+        return Err(SamError::Protocol("SAM destination length out of range"));
+    }
+    identity::Destination::from_bytes(bytes)
+        .map_err(|_| SamError::Protocol("SAM destination is not addressable"))
 }
 
 /// A bounded, allocation-capped SAM version number.
@@ -367,9 +390,14 @@ fn parse_decimal(digits: &[u8]) -> Result<u32, SamError> {
     Ok(value)
 }
 
-/// Encodes `bytes` as standard base64 with padding.
+/// Encodes `bytes` as padded I2P base64.
+///
+/// I2P substitutes `-` and `~` for the two standard base64 symbols at index
+/// 62 and 63 and pads with `=`. Every real router speaks only that form: a
+/// standard-alphabet value is rejected outright rather than decoded, so this
+/// alphabet is the wire format rather than a cosmetic variant of it.
 pub fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let first = u32::from(chunk[0]);
@@ -392,8 +420,12 @@ pub fn encode_base64(bytes: &[u8]) -> String {
     out
 }
 
-/// Decodes standard base64, rejecting non-alphabet bytes, bad padding, and
+/// Decodes padded I2P base64, rejecting non-alphabet bytes, bad padding, and
 /// inputs that could exceed `max_bytes`.
+///
+/// Length must stay a multiple of four: that is what a real service's own
+/// decoder requires, so an unpadded value is malformed here rather than
+/// silently accepted on the assumption that some router emits one.
 pub fn decode_base64(input: &[u8], max_bytes: usize) -> Result<Vec<u8>, SamError> {
     if input.len() > max_bytes.div_ceil(3) * 4 {
         return Err(SamError::Limit);
@@ -434,8 +466,11 @@ fn base64_value(byte: u8) -> Option<u32> {
         b'A'..=b'Z' => u32::from(byte - b'A'),
         b'a'..=b'z' => u32::from(byte - b'a') + 26,
         b'0'..=b'9' => u32::from(byte - b'0') + 52,
-        b'+' => 62,
-        b'/' => 63,
+        // Index 62 and 63, in I2P's substitution rather than the standard one.
+        // `+` and `/` are deliberately absent: a real service does not decode
+        // them, so accepting them would only hide a broken peer.
+        b'-' => 62,
+        b'~' => 63,
         _ => return None,
     })
 }
@@ -445,10 +480,72 @@ pub fn encode_hello(min: SamVersion, max: SamVersion) -> Result<Vec<u8>, SamErro
     Ok(format!("HELLO VERSION MIN={min} MAX={max}\n").into_bytes())
 }
 
+/// What `SESSION CREATE` asks the SAM service to use as the session identity.
+///
+/// The parameter is mandatory, not optional: a real service answers a command
+/// that omits it with `INVALID_KEY`, so this client can never emit one. Only
+/// these two forms exist on the wire.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SamSessionDestination {
+    /// `DESTINATION=TRANSIENT`: the service mints a fresh ephemeral identity
+    /// for this session and returns its key material in the status line. The
+    /// identity is therefore gone when the session goes.
+    Transient,
+    /// `DESTINATION=<base64 private keys>`: the service adopts injected key
+    /// material, so one identity outlives any single connection.
+    ///
+    /// The exact shape of that material is the service's contract, not this
+    /// crate's: real services disagree about it, and a value one accepts is
+    /// not necessarily well formed for the other. This client therefore
+    /// checks only that the value can be carried on a command line and
+    /// decoded as base64, and leaves the rest to the `INVALID_KEY` that a
+    /// service returns for key material it will not take.
+    PrivateKeys(String),
+}
+
+impl SamSessionDestination {
+    /// Rejects key material that could not be carried as one command value.
+    pub fn validate(&self) -> Result<(), SamError> {
+        let SamSessionDestination::PrivateKeys(encoded) = self else {
+            return Ok(());
+        };
+        if encoded.is_empty() || encoded.len() > MAX_SESSION_KEYS_TOKEN_BYTES {
+            return Err(SamError::Limit);
+        }
+        // `=` is permitted here even though a bare session identifier may not
+        // contain it: this is the value half of a `KEY=VALUE` pair, and base64
+        // padding is a legitimate character there.
+        if !encoded.is_ascii()
+            || encoded
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\\'))
+        {
+            return Err(SamError::Protocol("SAM private keys are not a bare value"));
+        }
+        decode_base64(encoded.as_bytes(), MAX_SESSION_KEYS_TOKEN_BYTES / 4 * 3)?;
+        Ok(())
+    }
+}
+
 /// Exact `SESSION CREATE STYLE=STREAM` command octets.
-pub fn encode_session_create(session_id: &str) -> Result<Vec<u8>, SamError> {
+///
+/// The `DESTINATION=` parameter is always present: a real service rejects the
+/// command without one, so omitting it is never a shorter spelling of the same
+/// request.
+pub fn encode_session_create(
+    session_id: &str,
+    destination: &SamSessionDestination,
+) -> Result<Vec<u8>, SamError> {
     validate_token(session_id)?;
-    Ok(format!("SESSION CREATE STYLE=STREAM ID={session_id}\n").into_bytes())
+    destination.validate()?;
+    let destination = match destination {
+        SamSessionDestination::Transient => "TRANSIENT",
+        SamSessionDestination::PrivateKeys(encoded) => encoded.as_str(),
+    };
+    Ok(
+        format!("SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION={destination}\n")
+            .into_bytes(),
+    )
 }
 
 /// Exact `NAMING LOOKUP` command octets.
@@ -681,41 +778,33 @@ async fn read_line(
 /// The private destination is an injected value: this type never reads a
 /// filesystem secret, environment variable, or any other ambient authority.
 /// Deciding whether and where destination key material is persisted belongs to
-/// the managed runtime composition layer. When no destination is injected the
-/// client can still serve inbound accepts, but its local hash is a documented
-/// placeholder rather than a connectable peer identity.
+/// the managed runtime composition layer.
+///
+/// The local hash is always a documented placeholder derived from the session
+/// identifier, never a router-confirmed Destination hash. Reconstructing an
+/// I2P Destination from private key material is outside this crate, so
+/// reporting a hash here would be a claim the router has not confirmed. A
+/// caller that needs the real local hash resolves it from the router with
+/// `NAMING LOOKUP NAME=ME` and keeps that result itself.
 #[derive(Clone, Debug)]
 pub struct SamIdentity {
-    destination: Option<identity::Destination>,
+    session_destination: SamSessionDestination,
     session_id: String,
     hash: [u8; 32],
 }
 
 impl SamIdentity {
-    /// Builds an identity from an optional base64 private destination string.
-    pub fn new(private_destination: Option<&str>, session_id: &str) -> Result<Self, SamError> {
+    /// Builds an identity from the destination `SESSION CREATE` will request.
+    pub fn new(
+        session_destination: SamSessionDestination,
+        session_id: &str,
+    ) -> Result<Self, SamError> {
         validate_token(session_id)?;
-        let destination = match private_destination {
-            None => None,
-            Some(encoded) => {
-                let bytes = decode_base64(encoded.as_bytes(), MAX_DESTINATION_BYTES)?;
-                if !(MIN_DESTINATION_BYTES..=MAX_DESTINATION_BYTES).contains(&bytes.len()) {
-                    return Err(SamError::Protocol("SAM destination length out of range"));
-                }
-                Some(
-                    identity::Destination::from_bytes(bytes)
-                        .map_err(|_| SamError::Protocol("SAM destination is not addressable"))?,
-                )
-            }
-        };
-        let hash = destination
-            .as_ref()
-            .map(identity::Destination::hash)
-            .unwrap_or_else(|| session_identity_hash(session_id));
+        session_destination.validate()?;
         Ok(Self {
-            destination,
+            hash: session_identity_hash(session_id),
+            session_destination,
             session_id: session_id.to_owned(),
-            hash,
         })
     }
 
@@ -723,18 +812,23 @@ impl SamIdentity {
         &self.session_id
     }
 
-    pub fn destination(&self) -> Option<&identity::Destination> {
-        self.destination.as_ref()
+    /// The destination form this client asks the service to bind the session to.
+    pub fn session_destination(&self) -> &SamSessionDestination {
+        &self.session_destination
     }
 
-    /// The eagerly computed local peer hash.
+    /// The eagerly computed local peer hash placeholder.
     pub fn hash(&self) -> [u8; 32] {
         self.hash
     }
 
-    /// Whether a real connectable Destination was injected.
-    pub fn has_destination(&self) -> bool {
-        self.destination.is_some()
+    /// Whether persistent private keys were injected rather than a transient
+    /// identity requested from the service.
+    pub fn has_persistent_keys(&self) -> bool {
+        matches!(
+            self.session_destination,
+            SamSessionDestination::PrivateKeys(_)
+        )
     }
 }
 
@@ -805,12 +899,16 @@ impl<F: SamConnectionFactory> SamClient<F> {
         })
     }
 
+    pub fn identity(&self) -> &SamIdentity {
+        &self.identity
+    }
+
     pub fn session_id(&self) -> &str {
         self.identity.session_id()
     }
 
-    pub fn identity(&self) -> &SamIdentity {
-        &self.identity
+    pub fn session_destination(&self) -> &SamSessionDestination {
+        self.identity.session_destination()
     }
 
     pub fn local_destination_hash(&self) -> [u8; 32] {
@@ -892,6 +990,11 @@ impl<F: SamConnectionFactory> SamClient<F> {
     }
 
     /// Resolves a naming entry to a verified Destination.
+    ///
+    /// The reply carries the Destination under `VALUE`, not under a
+    /// `DESTINATION` key: `DESTINATION` names the key a `SESSION CREATE`
+    /// command carries, and reusing it here would leave this waiting on a
+    /// second line a service never sends.
     pub async fn nam_lookup(
         &self,
         name: &str,
@@ -907,11 +1010,11 @@ impl<F: SamConnectionFactory> SamClient<F> {
                 &command,
                 cancellation,
                 self.timeouts.lookup,
-                Some("DESTINATION"),
+                Some("VALUE"),
             )
             .await?;
         reply.require_ok()?;
-        reply.destination("DESTINATION").map_err(Into::into)
+        reply.destination("VALUE").map_err(Into::into)
     }
 
     /// Opens an outbound peer stream on a fresh raw SAM connection.
@@ -941,6 +1044,11 @@ impl<F: SamConnectionFactory> SamClient<F> {
     }
 
     /// Accepts one inbound peer stream on a fresh raw SAM connection.
+    ///
+    /// The peer that connected is reported on the line after the status line,
+    /// carrying the Destination on its own with no option key, and everything
+    /// after it is already raw peer data. Reading it as a `KEY=VALUE` line
+    /// would consume the peer's first bytes instead.
     pub async fn stream_accept(
         &self,
         cancellation: &Cancellation,
@@ -949,18 +1057,43 @@ impl<F: SamConnectionFactory> SamClient<F> {
         let mut stream = self
             .open_connection(cancellation, self.timeouts.open, self.timeouts.handshake)
             .await?;
-        let reply = self
-            .exchange(
-                &mut stream,
-                &command,
-                cancellation,
-                self.timeouts.accept,
-                Some("DESTINATION"),
-            )
+        self.exchange(
+            &mut stream,
+            &command,
+            cancellation,
+            self.timeouts.accept,
+            None,
+        )
+        .await?
+        .require_ok()?;
+        let peer = self
+            .read_peer_destination(&mut stream, cancellation)
             .await?;
-        reply.require_ok()?;
-        let peer = reply.destination("DESTINATION")?;
         Ok((peer, stream))
+    }
+
+    /// Reads the bare Destination line a successful accept is followed by.
+    async fn read_peer_destination(
+        &self,
+        stream: &mut SamRawStream,
+        cancellation: &Cancellation,
+    ) -> Result<identity::Destination, TransportError> {
+        let limits = self.limits;
+        self.bounded(
+            async {
+                let mut budget = limits.max_reply_bytes;
+                let raw = read_line(stream, &limits, &mut budget).await?;
+                let text = std::str::from_utf8(trim_ending(&raw))
+                    .map_err(|_| SamError::Protocol("SAM destination line is not UTF-8"))?;
+                if text.len() > limits.max_value_bytes {
+                    return Err(TransportError::from(SamError::Limit));
+                }
+                decode_destination(text).map_err(Into::into)
+            },
+            self.timeouts.accept,
+            cancellation,
+        )
+        .await?
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, SessionState>, TransportError> {
@@ -1076,7 +1209,7 @@ impl<F: SamConnectionFactory> SamClient<F> {
             )));
         }
 
-        let command = encode_session_create(self.session_id())?;
+        let command = encode_session_create(self.session_id(), self.session_destination())?;
         let reply = self
             .exchange(stream, &command, cancellation, timeout, None)
             .await?;
@@ -1203,7 +1336,7 @@ mod tests {
     const SESSION_ID: &str = "torrent-session";
     /// Command octets the client must write.
     const HELLO: &str = "HELLO VERSION MIN=3.1 MAX=3.1\n";
-    const CREATE: &str = "SESSION CREATE STYLE=STREAM ID=torrent-session\n";
+    const CREATE: &str = "SESSION CREATE STYLE=STREAM ID=torrent-session DESTINATION=TRANSIENT\n";
     /// Reply octets a scripted service sends back.
     const HELLO_REPLY: &str = "HELLO REPLY RESULT=OK VERSION=3.1\n";
     const SESSION_REPLY: &str = "SESSION STATUS RESULT=OK\n";
@@ -1227,9 +1360,16 @@ mod tests {
         encode_base64(&vec![0x5a; len])
     }
 
+    /// Key material sized like the blob a real service hands back from a
+    /// transient `SESSION CREATE`, so the encoded value is a padded token the
+    /// service would actually accept.
+    fn session_keys_b64() -> String {
+        encode_base64(&vec![0x3c; SESSION_KEYS_BYTES])
+    }
+
     fn client(replies: Vec<Vec<u8>>) -> (SamClient<ScriptedFactory>, Arc<Mutex<Vec<Transcript>>>) {
         let (factory, transcripts) = ScriptedFactory::new(replies);
-        let identity = SamIdentity::new(None, SESSION_ID).unwrap();
+        let identity = SamIdentity::new(SamSessionDestination::Transient, SESSION_ID).unwrap();
         let client =
             SamClient::new(factory, identity, SamLimits::default(), test_timeouts()).unwrap();
         (client, transcripts)
@@ -1350,8 +1490,20 @@ mod tests {
             HELLO.as_bytes()
         );
         assert_eq!(
-            encode_session_create(SESSION_ID).unwrap(),
+            encode_session_create(SESSION_ID, &SamSessionDestination::Transient).unwrap(),
             CREATE.as_bytes()
+        );
+        assert_eq!(
+            encode_session_create(
+                SESSION_ID,
+                &SamSessionDestination::PrivateKeys(session_keys_b64())
+            )
+            .unwrap(),
+            format!(
+                "SESSION CREATE STYLE=STREAM ID=torrent-session DESTINATION={}\n",
+                session_keys_b64()
+            )
+            .as_bytes()
         );
         assert_eq!(
             encode_naming_lookup("tracker.i2p").unwrap(),
@@ -1372,7 +1524,7 @@ mod tests {
         );
         for encoded in [
             encode_hello(SamVersion::new(3, 1), SamVersion::new(3, 1)).unwrap(),
-            encode_session_create(SESSION_ID).unwrap(),
+            encode_session_create(SESSION_ID, &SamSessionDestination::Transient).unwrap(),
             encode_naming_lookup("tracker.i2p").unwrap(),
             encode_stream_connect(SESSION_ID, &destination, 0).unwrap(),
             encode_stream_accept(SESSION_ID).unwrap(),
@@ -1386,7 +1538,10 @@ mod tests {
 
     #[test]
     fn sam_command_tokens_reject_ambiguous_injection() {
-        assert!(matches!(encode_session_create(""), Err(SamError::Limit)));
+        assert!(matches!(
+            encode_session_create("", &SamSessionDestination::Transient),
+            Err(SamError::Limit)
+        ));
         assert!(matches!(
             encode_naming_lookup("name with space"),
             Err(SamError::Protocol(_))
@@ -1406,18 +1561,32 @@ mod tests {
     }
 
     #[test]
-    fn sam_base64_is_standard_padded_and_rejects_bad_input() {
+    fn sam_base64_is_i2p_padded_and_rejects_bad_input() {
         assert_eq!(encode_base64(b"a"), "YQ==");
         assert_eq!(encode_base64(b"ab"), "YWI=");
         assert_eq!(encode_base64(b"abc"), "YWJj");
+        // `-` stands at index 62 and `~` at index 63, where standard base64
+        // puts `+` and `/`. A real service decodes only these, so both
+        // substituted symbols must round-trip and both standard ones fail.
+        // These two vectors are the standard encoding of `+/+/` and `/+++`.
+        assert_eq!(encode_base64(&[0xfb, 0xff, 0xbf]), "-~-~");
+        assert_eq!(encode_base64(&[0xff, 0xef, 0xbe]), "~---");
         assert_eq!(decode_base64(b"YWJj", 3).unwrap(), b"abc");
         assert_eq!(decode_base64(b"YQ==", 1).unwrap(), b"a");
+        assert_eq!(decode_base64(b"-~-~", 3).unwrap(), [0xfb, 0xff, 0xbf]);
+        assert_eq!(decode_base64(b"~---", 3).unwrap(), [0xff, 0xef, 0xbe]);
         for bad in [
             &b"YQ="[..],
             &b"YQ==="[..],
             &b"YQ==YQ=="[..],
             &b"Y*Jj"[..],
             &b"YW_j"[..],
+            // Standard-alphabet symbols, which no real service decodes.
+            &b"Y+j"[..],
+            &b"Y/j"[..],
+            // Unpadded: a real service's decoder requires a multiple of four.
+            &b"YQ"[..],
+            &b"YWI"[..],
         ] {
             assert!(matches!(decode_base64(bad, 64), Err(SamError::Protocol(_))));
         }
@@ -1659,29 +1828,68 @@ mod tests {
     }
 
     #[test]
-    fn sam_identity_makes_the_key_boundary_explicit() {
-        let encoded = destination_b64(MIN_DESTINATION_BYTES);
-        let identity = SamIdentity::new(Some(&encoded), SESSION_ID).unwrap();
-        assert!(identity.has_destination());
-        assert_eq!(identity.session_id(), SESSION_ID);
-        let expected: [u8; 32] = sha2::Sha256::digest(vec![0x5a; MIN_DESTINATION_BYTES]).into();
-        assert_eq!(identity.hash(), expected);
-        let anonymous = SamIdentity::new(None, SESSION_ID).unwrap();
-        assert!(!anonymous.has_destination());
-        assert_ne!(anonymous.hash(), identity.hash());
-        assert_eq!(anonymous.hash(), session_identity_hash(SESSION_ID));
+    fn sam_identity_makes_the_session_destination_boundary_explicit() {
+        // `DESTINATION=` is mandatory on the wire, and only two forms of it
+        // are real: the literal `TRANSIENT`, or injected key material.
+        assert!(SamSessionDestination::Transient.validate().is_ok());
+        let keys = SamSessionDestination::PrivateKeys(session_keys_b64());
+        assert!(keys.validate().is_ok());
+        for rejected in [
+            // Not a bare value: it could close the line or the quoted field.
+            SamSessionDestination::PrivateKeys("keys\r\nSESSION CREATE".to_owned()),
+            SamSessionDestination::PrivateKeys("ke\"ys".to_owned()),
+            // Not base64 in this alphabet at all.
+            SamSessionDestination::PrivateKeys("not base64!".to_owned()),
+            SamSessionDestination::PrivateKeys("Y+j/Y=j=".to_owned()),
+            // Empty, and past the command-line bound.
+            SamSessionDestination::PrivateKeys(String::new()),
+            SamSessionDestination::PrivateKeys("A".repeat(MAX_SESSION_KEYS_TOKEN_BYTES + 1)),
+        ] {
+            assert!(
+                matches!(
+                    rejected.validate(),
+                    Err(SamError::Protocol(_) | SamError::Limit)
+                ),
+                "accepted {rejected:?}"
+            );
+            assert!(encode_session_create(SESSION_ID, &rejected).is_err());
+        }
+        // The decoded length is deliberately not this crate's decision: real
+        // services disagree about it, so a bare Destination is carried through
+        // intact here and the service answers `INVALID_KEY` if it wants.
+        let destination_only =
+            SamSessionDestination::PrivateKeys(destination_b64(MIN_DESTINATION_BYTES));
+        assert!(destination_only.validate().is_ok());
         assert!(matches!(
-            SamIdentity::new(Some("not base64!"), SESSION_ID),
+            SamIdentity::new(SamSessionDestination::Transient, "bad id"),
             Err(SamError::Protocol(_))
         ));
-        assert!(matches!(
-            SamIdentity::new(Some(&destination_b64(64)), SESSION_ID),
-            Err(SamError::Protocol(_))
-        ));
-        assert!(matches!(
-            SamIdentity::new(None, "bad id"),
-            Err(SamError::Protocol(_))
-        ));
+    }
+
+    #[test]
+    fn sam_identity_reports_a_placeholder_hash_rather_than_a_claimed_destination() {
+        let transient = SamIdentity::new(SamSessionDestination::Transient, SESSION_ID).unwrap();
+        let persistent = SamIdentity::new(
+            SamSessionDestination::PrivateKeys(session_keys_b64()),
+            SESSION_ID,
+        )
+        .unwrap();
+        assert_eq!(transient.session_id(), SESSION_ID);
+        assert_eq!(persistent.session_id(), SESSION_ID);
+        assert!(!transient.has_persistent_keys());
+        assert!(persistent.has_persistent_keys());
+        // Neither form claims a router-confirmed local hash: reconstructing a
+        // Destination from key material is outside this crate, so both report
+        // the documented placeholder derived from the session identifier.
+        assert_eq!(transient.hash(), session_identity_hash(SESSION_ID));
+        assert_eq!(persistent.hash(), transient.hash());
+        let other = SamIdentity::new(SamSessionDestination::Transient, "other-session").unwrap();
+        assert_ne!(other.hash(), transient.hash());
+        assert_ne!(
+            transient.hash().to_vec(),
+            sha2::Sha256::digest(destination_b64(MIN_DESTINATION_BYTES)).to_vec(),
+            "the placeholder must not be mistaken for a digest of wire bytes"
+        );
     }
 
     #[tokio::test]
@@ -1792,7 +2000,7 @@ mod tests {
     async fn sam_naming_lookup_returns_the_destination_from_a_fresh_connection() {
         let destination = vec![0x21; MIN_DESTINATION_BYTES];
         let (client, transcripts) = client(vec![format!(
-            "HELLO REPLY RESULT=OK VERSION=3.1\nSESSION STATUS RESULT=OK\nNAMING REPLY RESULT=OK\nDESTINATION={}\n",
+            "HELLO REPLY RESULT=OK VERSION=3.1\nSESSION STATUS RESULT=OK\nNAMING REPLY RESULT=OK NAME=tracker.i2p VALUE={}\n",
             encode_base64(&destination)
         )
         .into_bytes()]);
@@ -1816,12 +2024,14 @@ mod tests {
                 true,
             ),
             (
-                format!("{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK\nDESTINATION=****\n"),
+                format!(
+                    "{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK NAME=tracker.i2p VALUE=****\n"
+                ),
                 false,
             ),
             (
                 format!(
-                    "{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK DESTINATION={}\n",
+                    "{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK NAME=tracker.i2p VALUE={}\n",
                     destination_b64(64)
                 ),
                 false,
@@ -1919,7 +2129,7 @@ mod tests {
         let (client, transcripts) = client(vec![
             [
                 format!(
-                    "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK DESTINATION={}\n",
+                    "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK\n{}\n",
                     encode_base64(&peer)
                 )
                 .into_bytes(),
@@ -1977,7 +2187,7 @@ mod tests {
             format!("{HELLO_REPLY}{SESSION_REPLY}").into_bytes(),
             format!("{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK\nDEST").into_bytes(),
         ]);
-        let slow_identity = SamIdentity::new(None, SESSION_ID).unwrap();
+        let slow_identity = SamIdentity::new(SamSessionDestination::Transient, SESSION_ID).unwrap();
         let slow = SamClient::new(
             {
                 let (factory, _sink) = ScriptedFactory::new(vec![
@@ -2043,13 +2253,13 @@ mod tests {
         let peer = vec![0x63; MIN_DESTINATION_BYTES];
         let (client, transcripts) = client(vec![
             format!(
-                "{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK DESTINATION={}\n",
+                "{HELLO_REPLY}{SESSION_REPLY}NAMING REPLY RESULT=OK NAME=tracker.i2p VALUE={}\n",
                 encode_base64(&peer)
             )
             .into_bytes(),
             format!("{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK\n").into_bytes(),
             format!(
-                "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK DESTINATION={}\n",
+                "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK\n{}\n",
                 encode_base64(&peer)
             )
             .into_bytes(),

@@ -17,15 +17,25 @@
 //! Configure with:
 //!   I2PR_TC_SAM_ADDR=127.0.0.1:7656 cargo test -p i2pr-tc-i2p --test sam_live_qualification -- --nocapture
 //!
+//! Two cases need no configuration beyond a reachable bridge: the `HELLO` plus
+//! `SESSION CREATE` negotiation, and `NAMING LOOKUP NAME=ME`, which resolves
+//! the calling session's own Destination. Together they qualify command
+//! encoding, reply parsing, and base64 decoding against a real service.
+//!
 //! Optional extras:
-//!   I2PR_TC_LIVE_ANNOUNCE_URL   an `http://…/announce` URL to announce to
-//!   I2PR_TC_LIVE_NAME           a `.i2p` name to resolve
-//!   I2PR_TC_LIVE_DESTINATION    a base64 Destination to dial
+//!   I2PR_TC_LIVE_SESSION_KEYS  injected key material for a `SESSION CREATE`
+//!   I2PR_TC_LIVE_ANNOUNCE_URL  an `http://…/announce` URL to announce to
+//!   I2PR_TC_LIVE_NAME          a `.i2p` name to resolve
+//!   I2PR_TC_LIVE_DESTINATION   an I2P base64 Destination to dial
 use i2pr_tc_i2p::{
     I2pSession,
     identity::Destination,
-    sam::{SamClient, SamConnectionFactory, SamIdentity, SamLimits, SamRawStream, SamTimeouts},
+    sam::{
+        SamClient, SamConnectionFactory, SamIdentity, SamLimits, SamRawStream,
+        SamSessionDestination, SamTimeouts,
+    },
 };
+use sha2::Digest;
 use std::time::Duration;
 use tokio::net::TcpStream;
 
@@ -57,8 +67,14 @@ impl SamConnectionFactory for LocalSamFactory {
 fn timeouts() -> SamTimeouts {
     SamTimeouts {
         open: Duration::from_secs(20),
-        handshake: Duration::from_secs(30),
-        lookup: Duration::from_secs(30),
+        // Minting a transient identity makes a real service generate key
+        // material and publish a lease set, which took single-digit seconds per
+        // connection on the router this matrix was run against and queued up
+        // behind each other. The production default of 30s is a client-side
+        // bound, not a statement about how long a router may take, so the
+        // harness widens it rather than reporting a timeout as a defect.
+        handshake: Duration::from_secs(120),
+        lookup: Duration::from_secs(60),
         connect: Duration::from_secs(60),
         accept: Duration::from_secs(60),
         close: Duration::from_secs(5),
@@ -71,6 +87,12 @@ fn destination_from_env() -> Option<Destination> {
     // dependency for a test fixture.
     let bytes = i2pr_tc_i2p::sam::decode_base64(raw.as_bytes(), 8192).ok()?;
     Destination::from_bytes(bytes).ok()
+}
+
+/// Lowercase hex, for reporting a hash a human can compare against a `.b32.i2p`
+/// name by hand.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Report whether the environment can run the live matrix at all.
@@ -93,20 +115,83 @@ async fn environment_report() -> bool {
     }
 }
 
-fn client(factory: LocalSamFactory) -> SamClient<LocalSamFactory> {
-    let identity =
-        SamIdentity::new(None, "i2pr-tc-live-qualification").expect("session id is valid");
+/// Builds a client whose session identifier is unique to one live case.
+///
+/// A real service keeps a session alive after the connection that created it
+/// goes away, so reusing one identifier across cases makes the later cases
+/// collide with the earlier ones and report a duplicated id instead of their
+/// own result.
+fn client(case: &str, factory: LocalSamFactory) -> SamClient<LocalSamFactory> {
+    build_client(case, SamSessionDestination::Transient, factory)
+}
+
+fn build_client(
+    case: &str,
+    session_destination: SamSessionDestination,
+    factory: LocalSamFactory,
+) -> SamClient<LocalSamFactory> {
+    let identity = SamIdentity::new(
+        session_destination,
+        &format!("i2pr-tc-live-{case}-{}", std::process::id()),
+    )
+    .expect("a valid session destination and session id");
     SamClient::new(factory, identity, SamLimits::default(), timeouts())
         .expect("default SAM limits are valid")
+}
+
+/// Qualifies the second `DESTINATION=` form: injected key material.
+///
+/// This is the form a production client needs, because a transient identity is
+/// per-connection and cannot be dialled or persisted. The key material is
+/// injected, never read from disk here; obtain it from the router itself with
+/// one `SESSION CREATE … DESTINATION=TRANSIENT` and pass the `DESTINATION=`
+/// value back.
+#[tokio::test]
+async fn live_session_create_adopts_injected_key_material() {
+    let factory = || LocalSamFactory {
+        address: sam_address(),
+        opened: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+    if !environment_report().await {
+        return;
+    }
+    let Ok(keys) = std::env::var("I2PR_TC_LIVE_SESSION_KEYS") else {
+        println!(
+            "live SESSION CREATE with injected keys SKIPPED: set I2PR_TC_LIVE_SESSION_KEYS to \
+             the DESTINATION= value a real service returns for a transient SESSION CREATE."
+        );
+        return;
+    };
+    let client = build_client(
+        "keys",
+        SamSessionDestination::PrivateKeys(keys.clone()),
+        factory(),
+    );
+    let cancellation = i2pr_tc_storage::Cancellation::default();
+    match client.ensure_session(&cancellation).await {
+        Ok(()) => {
+            assert!(client.is_session_created());
+            println!(
+                "live SESSION CREATE ok with injected keys: {} encoded bytes accepted; \
+                 persistent keys={}",
+                keys.len(),
+                client.identity().has_persistent_keys()
+            );
+        }
+        Err(error) => println!("live SESSION CREATE with injected keys reported {error:?}"),
+    }
 }
 
 #[tokio::test]
 async fn live_hello_and_session_create_negotiate_with_a_real_router() {
     let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let client = client(LocalSamFactory {
-        address: sam_address(),
-        opened: std::sync::Arc::clone(&opened),
-    });
+    let client = client(
+        "hello",
+        LocalSamFactory {
+            address: sam_address(),
+            opened: std::sync::Arc::clone(&opened),
+        },
+    );
     if !environment_report().await {
         return;
     }
@@ -116,8 +201,9 @@ async fn live_hello_and_session_create_negotiate_with_a_real_router() {
             assert!(client.is_session_created());
             assert!(client.negotiated_version().is_some());
             println!(
-                "live HELLO/SESSION CREATE ok; version={:?}; raw connections opened={}",
+                "live HELLO/SESSION CREATE ok; version={:?}; DESTINATION={:?}; raw connections opened={}",
                 client.negotiated_version(),
+                client.session_destination(),
                 opened.load(std::sync::atomic::Ordering::SeqCst)
             );
         }
@@ -130,13 +216,77 @@ async fn live_hello_and_session_create_negotiate_with_a_real_router() {
     }
 }
 
+/// The one live case that needs no external input at all.
+///
+/// `NAME=ME` is a SAM v3 reserved name that a service resolves to the calling
+/// session's own Destination, so this exercises the full path that matters for
+/// interoperability — command encoding, reply parsing, and decoding a real
+/// Destination out of a real service's base64 — without needing a second peer,
+/// a hostname, or a tracker.
+#[tokio::test]
+async fn live_session_resolves_its_own_destination_without_any_external_input() {
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let client = client(
+        "name-me",
+        LocalSamFactory {
+            address: sam_address(),
+            opened: std::sync::Arc::clone(&opened),
+        },
+    );
+    if !environment_report().await {
+        return;
+    }
+    let session: &dyn I2pSession = &client;
+    match session.lookup("ME").await {
+        Ok(destination) => {
+            // A Destination this client would accept as diallable, with the
+            // hash a peer would actually be keyed by, decoded intact from a
+            // real service's base64.
+            assert_eq!(destination.hash().len(), 32);
+            let expected: [u8; 32] = sha2::Sha256::digest(destination.as_bytes()).into();
+            assert_eq!(
+                destination.hash(),
+                expected,
+                "the reported hash must be the digest of the returned bytes"
+            );
+            println!(
+                "live NAME=ME ok: {}-byte Destination, hash={}",
+                destination.as_bytes().len(),
+                hex(&destination.hash())
+            );
+            // Each lookup runs on its own raw connection, and this client asks
+            // for a transient identity, so a second connection is expected to
+            // come back with a different one. Recording that is the point:
+            // identity only survives a connection when private keys are
+            // injected, which is why this harness never asserts stability.
+            let again = session
+                .lookup("ME")
+                .await
+                .expect("a second NAME=ME over a fresh raw connection");
+            println!(
+                "live NAME=ME repeat ok: second connection hash={} ({} the first)",
+                hex(&again.hash()),
+                if again.hash() == destination.hash() {
+                    "equal to"
+                } else {
+                    "different from"
+                }
+            );
+        }
+        Err(error) => println!("live NAME=ME reported {error:?}"),
+    }
+}
+
 #[tokio::test]
 async fn live_naming_lookup_resolves_a_real_name() {
     let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let client = client(LocalSamFactory {
-        address: sam_address(),
-        opened: std::sync::Arc::clone(&opened),
-    });
+    let client = client(
+        "naming",
+        LocalSamFactory {
+            address: sam_address(),
+            opened: std::sync::Arc::clone(&opened),
+        },
+    );
     if !environment_report().await {
         return;
     }
@@ -160,16 +310,19 @@ async fn live_naming_lookup_resolves_a_real_name() {
 #[tokio::test]
 async fn live_stream_connect_and_accept_carry_real_traffic() {
     let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let client = client(LocalSamFactory {
-        address: sam_address(),
-        opened: std::sync::Arc::clone(&opened),
-    });
+    let client = client(
+        "connect",
+        LocalSamFactory {
+            address: sam_address(),
+            opened: std::sync::Arc::clone(&opened),
+        },
+    );
     if !environment_report().await {
         return;
     }
     let Some(peer) = destination_from_env() else {
         println!(
-            "live STREAM CONNECT SKIPPED: set I2PR_TC_LIVE_DESTINATION to a base64 \
+            "live STREAM CONNECT SKIPPED: set I2PR_TC_LIVE_DESTINATION to an I2P base64 \
              Destination of a peer running this client."
         );
         return;

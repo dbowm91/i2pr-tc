@@ -56,9 +56,14 @@ connector exists solely in a declared test target for live qualification.
 - Protocol behaviour is covered by deterministic tests, including full magnet
   acquisition to completion and inbound peer transfer.
 - SAM protocol behaviour is covered by exact-octet transcript tests.
-- **Live-router interoperability has not been run.** Qualifying against a real
-  Java I2P or i2pd SAM bridge is a prerequisite for managed integration, not a
-  claim this repository currently makes.
+- **Live-router interoperability has been run against i2pd 2.61.0.** `HELLO`
+  and `SESSION CREATE` qualify for both a transient and an injected-key
+  identity, and `NAMING LOOKUP NAME=ME` decodes a real 387-byte Destination.
+  Three cases remain unexecuted because each needs an input this repository
+  does not have: a registered `.i2p` name, a second peer running this client,
+  and a tracker announce URL. That run is also what surfaced four wire defects
+  the transcript tests could not, since every fixture had been written to match
+  this client's own assumptions.
 - Tracker announces carry no `User-Agent`, and the peer extension handshake
   advertises no client version.
 

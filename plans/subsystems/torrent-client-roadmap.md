@@ -129,9 +129,10 @@ Reached. The application-side SAM-v3 client, the fingerprint removals, the
 per-torrent state ownership with generation-checked persistence reservations,
 and the bounded storage offload are implemented and verified. Magnet and
 inbound transfer qualification passes deterministically. Live-router
-qualification is environment-dependent and was not executed; M004 owns running
-it against a real bridge as its first act, and that is the medium-severity
-residual finding in the C001 closure.
+qualification has since been run against i2pd 2.61.0 and found four wire
+defects the transcript tests could not, all now fixed; three of its six cases
+still need a registered `.i2p` name, a second peer, and a tracker announce
+URL, which M004 supplies from its integration environment.
 
 ## M003 — Transmission RPC compatibility
 
@@ -178,8 +179,10 @@ C001/C002 closures:
   connection seams plus router app-principal capability gateway;
 - C001 is closed: the application-side raw-SAM client, the fingerprint
   removals, and the transport/storage hardening are implemented. Live-router
-  interoperability was not executed and is M004's first work package, not a
-  reason to hold this milestone;
+  interoperability has been run against i2pd 2.61.0 and the defects it found
+  are fixed; the three remaining cases need a name, a second peer, and a
+  tracker URL, which is M004's first work package rather than a reason to hold
+  this milestone;
 - AppManager/package/process lifecycle and process authentication remain
   unregistered/unimplemented upstream;
 - OS sandbox/resource containment remains future work;
@@ -189,9 +192,11 @@ C001/C002 closures:
 M003's RPC adapter is already closed; its production publication still waits on
 host-owned ingress.
 
-M004 is therefore the eligible next milestone, and its first work package is
-live qualification of the SAM client against a real bridge, followed by
-composing `SamConnectionFactory` from the managed runtime.
+M004 is therefore the eligible next milestone. Its first work package is the
+three remaining live cases and a production decision on injecting and
+persisting SAM key material — a transient identity is per-connection and cannot
+be dialled — followed by composing `SamConnectionFactory` from the managed
+runtime.
 
 ## M005 — Router update artifact transport
 
