@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001 and M003 closed, historical M002 conditionally closed, M002 C001 closed, C002 in progress, M004/M005 blocked
+Status: active; M001/M003 closed, historical M002 conditionally closed, M002 C001 closed, C002 closed and integrated to `main`; M004 eligible, M005 blocked
 
 Canonical authority:
 
@@ -148,7 +148,13 @@ listener. M004 will supply host-owned ingress.
 
 ## C002 — Planning, documentation, MSRV, and branch integration reconciliation
 
-Status: ready; unblocked by the C001 closure.
+Status: closed.
+
+Closure:
+`plans/closure/torrent-client/007-c002-status.md`
+
+Integrated into `main` at `624f11d3d400cc71a0243b821260433ac9bb8859` by
+fast-forward, with no divergence to reconcile.
 
 Plan:
 `plans/implementation/torrent-client/007-c002-foundation-branch-reconciliation.md`
@@ -165,12 +171,15 @@ Status: blocked.
 Plan:
 `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`
 
-Current blocker interpretation after the 2026-10-06 upstream recheck:
+Current blocker interpretation after the 2026-10-06 upstream recheck and the
+C001/C002 closures:
 
 - i2pr Plans 354 and 355 are closed and provide the private raw SAM/I2CP
   connection seams plus router app-principal capability gateway;
-- C001 must first supply/qualify the application-side raw-SAM client and
-  transport hardening;
+- C001 is closed: the application-side raw-SAM client, the fingerprint
+  removals, and the transport/storage hardening are implemented. Live-router
+  interoperability was not executed and is M004's first work package, not a
+  reason to hold this milestone;
 - AppManager/package/process lifecycle and process authentication remain
   unregistered/unimplemented upstream;
 - OS sandbox/resource containment remains future work;
@@ -179,6 +188,10 @@ Current blocker interpretation after the 2026-10-06 upstream recheck:
 
 M003's RPC adapter is already closed; its production publication still waits on
 host-owned ingress.
+
+M004 is therefore the eligible next milestone, and its first work package is
+live qualification of the SAM client against a real bridge, followed by
+composing `SamConnectionFactory` from the managed runtime.
 
 ## M005 — Router update artifact transport
 
