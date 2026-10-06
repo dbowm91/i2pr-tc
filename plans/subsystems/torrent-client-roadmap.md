@@ -130,17 +130,12 @@ C001 must:
 - add full magnet/inbound deterministic cases and live Java I2P/available
   alternate-router interoperability evidence where feasible.
 
-Exit: the I2P transport is composition-ready for M004 without a direct host SAM
-fallback or a torrent-specific router gateway.
+Historical exit claim: C001 considered the I2P transport composition-ready for M004 without a direct host SAM fallback or torrent-specific router gateway. C003 corrects that conclusion forward: the storage/fingerprint work remains valid, but production transport readiness now requires the SAM 3.3 shared-Destination corrective.
 
 Reached. The application-side SAM-v3 client, the fingerprint removals, the
 per-torrent state ownership with generation-checked persistence reservations,
 and the bounded storage offload are implemented and verified. Magnet and
-inbound transfer qualification passes deterministically. Live-router
-qualification has since been run against i2pd 2.61.0 and found four wire
-defects the transcript tests could not, all now fixed; three of its six cases
-still need a registered `.i2p` name, a second peer, and a tracker announce
-URL, which M004 supplies from its integration environment.
+inbound transfer qualification passes deterministically. Live-router qualification against i2pd 2.61.0 exposed four wire defects that were fixed, but later SAM lifecycle/DHT research found a deeper architectural defect not covered by that closure: one torrent identity must remain one long-lived Destination across STREAM and future DATAGRAM/RAW use. C003 owns that correction. The previously unexecuted name/second-peer/tracker rows move behind C003 rather than serving as M004's first work package.
 
 ## C003 — SAM 3.3 PRIMARY/subsession shared-Destination transport corrective
 
