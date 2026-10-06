@@ -9,7 +9,7 @@ Plan: `plans/implementation/torrent-client/008-c003-sam33-primary-dht-transport-
 Implementation commits:
 
 - `a94a7e8` — transport, tests, fuzz target, and this closure record.
-- `53e942e` — pins the implementation SHA into this record (documentation only).
+- `f88e1fd` — pins the implementation SHA into this record (documentation only).
 
 Closure recommendation: **conditionally closed.** Criteria 1–7 and 9 are met
 with evidence below. Criterion 8 is *not* met and cannot be met from this
