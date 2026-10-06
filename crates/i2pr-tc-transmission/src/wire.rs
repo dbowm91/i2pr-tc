@@ -13,6 +13,7 @@ const MAX_ARRAY_ITEMS: usize = 4096;
 const MAX_OBJECT_MEMBERS: usize = 1024;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 const MAX_JSON_NODES: usize = 100_000;
+const MAX_JSON_DEPTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireMode {
@@ -195,16 +196,16 @@ fn take_string(object: &mut Map<String, Value>, key: &str) -> Result<String, Wir
 }
 
 fn enforce_node_limit(root: &Value) -> Result<(), WireError> {
-    let mut stack = vec![root];
+    let mut stack = vec![(root, 0usize)];
     let mut nodes = 0usize;
-    while let Some(value) = stack.pop() {
+    while let Some((value, depth)) = stack.pop() {
         nodes += 1;
-        if nodes > MAX_JSON_NODES {
+        if nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH {
             return Err(WireError::Limit);
         }
         match value {
-            Value::Array(values) => stack.extend(values),
-            Value::Object(values) => stack.extend(values.values()),
+            Value::Array(values) => stack.extend(values.iter().map(|value| (value, depth + 1))),
+            Value::Object(values) => stack.extend(values.values().map(|value| (value, depth + 1))),
             _ => {}
         }
     }
@@ -349,6 +350,16 @@ mod tests {
         assert!(matches!(
             parse_request(br#"{"jsonrpc":"2.0","method":"session_get","params":[]}"#),
             Err(WireError::Invalid)
+        ));
+        let mut nested = "null".to_owned();
+        for _ in 0..=MAX_JSON_DEPTH {
+            nested = format!("[{nested}]");
+        }
+        let deep =
+            format!(r#"{{"jsonrpc":"2.0","method":"session_get","params":{{"nested":{nested}}}}}"#);
+        assert!(matches!(
+            parse_request(deep.as_bytes()),
+            Err(WireError::Limit)
         ));
     }
 }
