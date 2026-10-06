@@ -662,6 +662,9 @@ impl PersistentTorrentService {
             <Self as TorrentService>::command(self, TorrentCommand::Verify(id))?;
         }
         let payload = Storage::open(self.payload_root(id)).map_err(|_| ServiceError::Storage)?;
+        payload
+            .prepare(&meta.files)
+            .map_err(|_| ServiceError::Storage)?;
         let verified = match payload.recheck_cancellable(
             &meta.files,
             meta.piece_length,

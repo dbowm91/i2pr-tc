@@ -18,6 +18,8 @@ use thiserror::Error;
 
 pub mod service;
 pub use service::PersistentTorrentService;
+pub mod runtime;
+pub use runtime::TorrentRuntime;
 
 const MAX_RESUME_PIECES: usize = 4_000_000;
 const MAX_PIECE_LENGTH: u32 = 16 * 1024 * 1024;
