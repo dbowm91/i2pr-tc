@@ -1,32 +1,45 @@
 # Torrent Client M004 — i2pr Managed-App Integration
 
-Status: blocked on missing upstream app-runtime interfaces
+Status: blocked on C003, upstream i2pr Plan 368, and missing app-runtime interfaces
 
-## Upstream recheck (2026-10-06, updated 2026-10-07)
+## Corrective dependency amendment (2026-10-06)
 
-Fetched upstream refs: `main` `144c54da2eaaa46497955e0e371f06ab6efcd1b1` and `codex/plan-345-native-app-runtime` `ea7b5ccef9bacbddf826f074cc59d891849a1424`. The authoritative main registry shows Plan 354 ready and Plan 355 blocked on 354; neither is closed. The managed-app roadmap says package/lifecycle/AppManager ownership remains a future unregistered milestone. No host-owned app ingress or private persistent-data contract is exposed to this consumer. Together with the missing upstream interfaces, these keep M004 blocked. Recheck upstream before promotion.
+Post-C001 SAM/I2CP research invalidated the assumption that M004 could compose
+the existing STREAM-only `SamClient` directly.
 
-**Updated 2026-10-07.** This plan previously also cited M002's outstanding
-operational qualification. That is no longer a blocker: the full magnet,
-inbound-transfer, and live-router cases all pass, the live-router matrix has
-been run against i2pd 2.61.0, and the four wire defects it found are fixed. Three
-live cases remain unexecuted — a registered `.i2p` name, a second peer running
-this client, and a tracker announce URL — and M004's integration environment is
-what supplies those. The residual M002 item M004 still owns is a production
-decision on injecting and persisting SAM key material, because a transient
-identity is per-connection and can be neither dialled nor persisted.
+The production torrent transport must preserve one I2P Destination across
+peer/tracker Streaming and future I2P DHT datagrams. The current client instead
+has an incorrect SAM session lifetime model and exposes a placeholder
+session-ID-derived local hash. M004 must not encode those defects into the
+managed-app runtime.
+
+New hard dependencies:
+
+- i2pr-tc C003:
+  `plans/implementation/torrent-client/008-c003-sam33-primary-dht-transport-corrective.md`;
+- upstream i2pr Plan 368:
+  `plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md`.
+
+The required transport topology after those close is one long-lived SAM 3.3
+PRIMARY/shared session with STREAM plus DATAGRAM/RAW children sharing the same
+Destination. C003 owns the application client and real local Destination/hash;
+Plan 368 owns router-side PRIMARY/subsession semantics over the existing
+Streaming and protocol-17/protocol-18 data planes.
+
+Historical C001/C002 closure evidence is retained and not rewritten.
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M004--i2pr-managed-app-integration`
 
 Primary class: integration capability + security invariant
 
-Hard dependency: M002 closed.
+Hard dependencies: M002 historical work retained; C003 closed; upstream i2pr Plan 368 closed.
 
 Interface dependencies:
 
-- managed app manager/process authentication, package lifecycle, and OS sandbox contract (the corrected protocol and router-side SAM/I2CP gateway are now closed upstream);
-- live app-scoped SAM gateway;
+- SAM 3.3 PRIMARY/subsession shared-Destination profile from upstream Plan 368;
+- managed app manager/process authentication, package lifecycle, and OS sandbox contract;
+- live app-scoped SAM gateway implementing the Plan-368 profile;
 - host-owned PublishedLocalService or equivalent for RPC;
 - private persistent app-data root semantics.
 
@@ -50,9 +63,25 @@ Do not request general brokered clearnet TCP or UnsafeDirect as a normal profile
 
 ## SAM adaptation
 
-Bind M002 SamTransport to i2pr's app-scoped service stream.
+Compose the C003 transport, not the historical C001 STREAM-only shape.
 
-Prove no direct host SAM socket, no administrator/Proposal 170 credential, no access to another app's resources, deterministic capability loss/revocation behavior, and bounded reconnect following host lifecycle policy.
+The managed runtime supplies raw `service=sam` logical streams. The app-side
+transport owns one long-lived primary session and opens additional raw SAM
+connections for its STREAM/DATAGRAM/RAW children according to the Plan-368
+contract.
+
+M004 must prove:
+
+- the primary and all children remain inside one app principal;
+- the same real Destination/hash is observed by STREAM, DATAGRAM, and RAW;
+- no direct host SAM/UDP/TCP socket exists in production;
+- no administrator/Proposal-170 credential is required;
+- no access to another app's primary/children/resources is possible;
+- capability loss tears down the primary and children deterministically;
+- restart restores persistent Destination key material through the authorized
+  app-private data owner and therefore preserves the node identity when policy
+  requests persistence;
+- reconnect is bounded and generation-safe.
 
 ## Persistent data
 
@@ -88,9 +117,9 @@ Attempted direct socket use should fail without breaking supported operation.
 
 ## Ordered work packages
 
-WP1 upstream contract recheck and ADR correction if needed.
+WP1 C003 + Plan-368 closure recheck and ADR correction if needed.
 WP2 app package/manifest + protocol client.
-WP3 SAM capability-channel adapter.
+WP3 SAM 3.3 primary/subsession capability-channel composition.
 WP4 persistent data/resource adaptation.
 WP5 lifecycle/health/restart.
 WP6 host-published Transmission ingress if dependency exists.
@@ -98,11 +127,11 @@ WP7 secured-profile negative qualification.
 
 ## Acceptance criteria
 
-M004 closes when the managed profile downloads/seeds via i2pr SAM capability while host/loopback networking remain denied, persists/restarts under AppManager, and exposes RPC only through host-owned ingress when that feature is claimed.
+M004 closes when the managed profile downloads/seeds through the corrected SAM 3.3 shared-Destination capability while host/loopback networking remain denied, the real Destination identity persists/restarts under AppManager policy, STREAM/DATAGRAM/RAW identity parity is demonstrated, and RPC is exposed only through host-owned ingress when that feature is claimed.
 
 ## Stop conditions
 
-Stop rather than bypass if upstream SAM requires administrator credentials; RPC requires direct loopback; normal operation requires UnsafeDirect; persistence requires arbitrary host filesystem access; or the current managed-app protocol is too incomplete for ownership/cancellation semantics.
+Stop rather than bypass if C003 or Plan 368 is not positively closed; upstream SAM requires administrator credentials; the shared Destination cannot span STREAM/DATAGRAM/RAW; RPC requires direct loopback; normal operation requires UnsafeDirect; persistence requires arbitrary host filesystem access; or the current managed-app protocol is too incomplete for ownership/cancellation semantics.
 
 Register the missing upstream interface requirement instead.
 
