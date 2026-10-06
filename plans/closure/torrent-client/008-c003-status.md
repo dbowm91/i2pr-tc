@@ -6,8 +6,10 @@ Date: 2026-10-07
 
 Plan: `plans/implementation/torrent-client/008-c003-sam33-primary-dht-transport-corrective.md`
 
-Implementation commit: recorded in the commit that adds this record
-(`git log -1 --format=%H -- plans/closure/torrent-client/008-c003-status.md`).
+Implementation commits:
+
+- `a94a7e8` — transport, tests, fuzz target, and this closure record.
+- `53e942e` — pins the implementation SHA into this record (documentation only).
 
 Closure recommendation: **conditionally closed.** Criteria 1–7 and 9 are met
 with evidence below. Criterion 8 is *not* met and cannot be met from this
