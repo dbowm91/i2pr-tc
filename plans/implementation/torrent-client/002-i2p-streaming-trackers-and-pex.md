@@ -1,6 +1,8 @@
 # Torrent Client M002 — I2P Streaming, Trackers, Magnet Metadata, and PEX
 
-Status: closing
+Status: conditionally closed
+
+Closure record: `plans/closure/torrent-client/002-status.md`.
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M002--i2p-streaming-trackers-and-pex`

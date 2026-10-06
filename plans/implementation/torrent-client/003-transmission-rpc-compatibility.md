@@ -1,6 +1,15 @@
 # Torrent Client M003 — Transmission RPC Compatibility
 
-Status: ready
+Status: active
+
+## Contract recheck (2026-10-06)
+
+- Current official RPC contract: [`transmission/docs/rpc-spec.md`](https://github.com/transmission/transmission/blob/main/docs/rpc-spec.md) at upstream `main` commit `48835c6660a7a3730b5a122bb7b88909997addbe`.
+- Target current wire mode: Transmission 4.1.0+ JSON-RPC 2.0 with snake_case methods/fields; the current contract identifies `rpc_version_semver` 6.0.0 as the semver API version and documents HTTP 409 session-token retry behavior.
+- Legacy compatibility reference: the official 4.0.6 RPC specification at commit `38c164933e9f77c110b48fe745861c3b98e3d83e`, covering the older bespoke envelope and mixed kebab/camel naming.
+- Local interoperability tools are installed as Transmission 4.1.3 (`transmission-remote` and `transmission-daemon`, build `838877323f`).
+
+Implementation will expose one canonical request model for both wire modes. The method and field matrix will state which current/legacy aliases are accepted and which settings remain explicitly unsupported.
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M003--transmission-rpc-compatibility`

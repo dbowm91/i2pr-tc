@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001 closed, M002 active, M003 ready, M004/M005 blocked on external contracts
+Status: active; M001 closed, M002 conditionally closed pending operational qualification, M003 active, M004/M005 blocked on external contracts
 
 Canonical authority:
 
@@ -68,7 +68,7 @@ Exit: fixtures prove metainfo/infohash/path correctness, peer-wire/extension cod
 
 ## M002 — I2P streaming trackers and PEX
 
-Status: active.
+Status: conditionally closed.
 
 Plan:
 `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md`
@@ -77,9 +77,11 @@ Add injected SAM transport, long-lived I2P session semantics, HTTP I2P trackers,
 
 Exit: qualified swarms transfer data using only I2P address semantics and recover across tracker/peer/router disconnects.
 
+Closure record: `plans/closure/torrent-client/002-status.md`. Live-router and complete swarm/reconnect qualification remains operationally outstanding.
+
 ## M003 — Transmission RPC compatibility
 
-Status: ready.
+Status: active.
 
 Plan:
 `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md`
