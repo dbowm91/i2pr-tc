@@ -29,13 +29,24 @@ ALLOWED_DEPENDENCIES = {
         "thiserror",
         "tokio",
     },
+    "i2pr-tc-transmission": {
+        "base64",
+        "fs2",
+        "i2pr-tc-core",
+        "i2pr-tc-storage",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+    },
 }
 FORBIDDEN_SOURCE = re.compile(
     r"(?:std|core)::net\b|tokio::net\b|(?:reqwest|hyper|ureq)::|"
     r"\b(?:TcpStream|TcpListener|UdpSocket)\b|std::process::Command|Command::new|"
-    r"\btransmission(?:_rpc)?\b|\bi2pr_(?:daemon|router|sam|proto|app|runtime)\b",
+    r"\bi2pr_(?:daemon|router|sam|proto|app|runtime)\b",
     re.IGNORECASE,
 )
+TRANSMISSION_DOMAIN = re.compile(r"\btransmission(?:_rpc)?\b", re.IGNORECASE)
 
 
 def check(root: Path) -> list[str]:
@@ -57,7 +68,9 @@ def check(root: Path) -> list[str]:
             failures.append(f"{crate} has no Rust source files")
         for path in rust_files:
             for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                if FORBIDDEN_SOURCE.search(line):
+                if FORBIDDEN_SOURCE.search(line) or (
+                    crate != "i2pr-tc-transmission" and TRANSMISSION_DOMAIN.search(line)
+                ):
                     relative = path.relative_to(root)
                     failures.append(f"{relative}:{line_number}: forbidden boundary reference")
     return failures
@@ -70,6 +83,7 @@ def self_test() -> list[str]:
         "use reqwest::Client;": True,
         "let x = std::process::Command::new(\"curl\");": True,
         "use i2pr_daemon::Sam;": True,
+        "pub struct TransmissionAdapter;": False,
         "use std::fs::File;": False,
         "pub struct TorrentService;": False,
     }
@@ -83,9 +97,11 @@ def self_test() -> list[str]:
         core = root / "crates/i2pr-tc-core"
         storage = root / "crates/i2pr-tc-storage"
         i2p = root / "crates/i2pr-tc-i2p"
+        transmission = root / "crates/i2pr-tc-transmission"
         (core / "src").mkdir(parents=True)
         (storage / "src").mkdir(parents=True)
         (i2p / "src").mkdir(parents=True)
+        (transmission / "src").mkdir(parents=True)
         (core / "Cargo.toml").write_text(
             "[package]\nname='i2pr-tc-core'\n[dependencies]\nsha1='0.10'\n",
             encoding="utf-8",
@@ -103,9 +119,18 @@ def self_test() -> list[str]:
             "thiserror='2'\ntokio='1'\n",
             encoding="utf-8",
         )
+        (transmission / "Cargo.toml").write_text(
+            "[package]\nname='i2pr-tc-transmission'\n[dependencies]\n"
+            "i2pr-tc-core={path='../i2pr-tc-core'}\n"
+            "i2pr-tc-storage={path='../i2pr-tc-storage'}\n"
+            "base64='0.22'\nfs2='0.4'\nserde='1'\nserde_json='1'\n"
+            "thiserror='2'\ntokio='1'\n",
+            encoding="utf-8",
+        )
         (core / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         (storage / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         (i2p / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
+        (transmission / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         if check(root):
             failed.append("boundary guard rejected its clean control fixture")
         with (core / "Cargo.toml").open("a", encoding="utf-8") as stream:
