@@ -27,6 +27,11 @@
 //!   I2PR_TC_LIVE_ANNOUNCE_URL  an `http://…/announce` URL to announce to
 //!   I2PR_TC_LIVE_NAME          a `.i2p` name to resolve
 //!   I2PR_TC_LIVE_DESTINATION   an I2P base64 Destination to dial
+//!
+//! Two-peer streaming lives in its own target, `sam_live_two_peer.rs`, because
+//! it needs two bridges and provisions its own peer. This target's
+//! `I2PR_TC_LIVE_DESTINATION` row is for dialling a peer this harness does not
+//! own, such as a remote torrent peer.
 use i2pr_tc_i2p::{
     I2pSession,
     identity::Destination,

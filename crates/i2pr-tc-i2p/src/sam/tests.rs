@@ -356,8 +356,29 @@ fn sam_commands_are_exact_octets_for_the_shared_destination_profile() {
         b"SESSION CREATE STYLE=MASTER ID=sid DESTINATION=TRANSIENT\n"
     );
 
-    // A child never names a destination and never asks the router for a host
-    // forwarding socket; a stream child names no ports at all.
+    // A child never names a destination and never asks the router to forward to
+    // a host it names; a stream child names no ports at all.
+    for kind in [
+        SamChannelKind::RepliableDatagram,
+        SamChannelKind::RawDatagram,
+    ] {
+        let add = String::from_utf8(
+            encode_session_add(
+                kind,
+                "sid",
+                SamChannelConfig {
+                    from_port: 1,
+                    to_port: 2,
+                    listen_port: 3,
+                },
+            )
+            .unwrap(),
+        )
+        .expect("ASCII");
+        assert!(!add.contains("HOST"), "{add}");
+        assert!(!add.contains("sam.udp"), "{add}");
+        assert!(!add.contains("DESTINATION"), "{add}");
+    }
     assert_eq!(
         encode_session_add(
             SamChannelKind::Stream,
@@ -378,7 +399,7 @@ fn sam_commands_are_exact_octets_for_the_shared_destination_profile() {
             },
         )
         .unwrap(),
-        b"SESSION ADD STYLE=DATAGRAM ID=sid-d-1 FROM_PORT=12345 TO_PORT=53 LISTEN_PORT=12346\n"
+        b"SESSION ADD STYLE=DATAGRAM ID=sid-d-1 PORT=12345 FROM_PORT=12345 TO_PORT=53 LISTEN_PORT=12346\n"
     );
     assert_eq!(
         encode_session_add(
@@ -391,7 +412,7 @@ fn sam_commands_are_exact_octets_for_the_shared_destination_profile() {
             },
         )
         .unwrap(),
-        b"SESSION ADD STYLE=RAW ID=sid-r-1 FROM_PORT=12345 TO_PORT=69 LISTEN_PORT=12347 PROTOCOL=18\n"
+        b"SESSION ADD STYLE=RAW ID=sid-r-1 PORT=12345 FROM_PORT=12345 TO_PORT=69 LISTEN_PORT=12347 PROTOCOL=18\n"
     );
     assert_eq!(
         encode_session_remove("sid-stream-1").unwrap(),
@@ -867,7 +888,7 @@ async fn sam_child_channels_are_attached_on_the_control_connection() {
         OK,
     ));
     control.push(Step::new(
-        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 FROM_PORT=1 TO_PORT=2 LISTEN_PORT=3\n",
+        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 PORT=1 FROM_PORT=1 TO_PORT=2 LISTEN_PORT=3\n",
         OK,
     ));
     control.push(Step::new("SESSION REMOVE ID=i2pr-sid-stream-1\n", OK));
@@ -994,11 +1015,11 @@ async fn sam_datagram_and_raw_children_frame_on_the_bridge_socket() {
     let peer = synthetic_destination(11);
     let mut control = primary_script(&destination);
     control.push(Step::new(
-        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 FROM_PORT=7 TO_PORT=8 LISTEN_PORT=7\n",
+        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 PORT=7 FROM_PORT=7 TO_PORT=8 LISTEN_PORT=7\n",
         OK,
     ));
     control.push(Step::new(
-        "SESSION ADD STYLE=RAW ID=i2pr-sid-raw-1 FROM_PORT=9 TO_PORT=10 LISTEN_PORT=9 PROTOCOL=18\n",
+        "SESSION ADD STYLE=RAW ID=i2pr-sid-raw-1 PORT=9 FROM_PORT=9 TO_PORT=10 LISTEN_PORT=9 PROTOCOL=18\n",
         OK,
     ));
     let datagram_send = format!(
@@ -1115,7 +1136,7 @@ async fn sam_datagram_payload_bounds_are_enforced_without_io() {
     let destination = synthetic_destination(12);
     let mut control = primary_script(&destination);
     control.push(Step::new(
-        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 FROM_PORT=1 TO_PORT=2 LISTEN_PORT=1\n",
+        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 PORT=1 FROM_PORT=1 TO_PORT=2 LISTEN_PORT=1\n",
         OK,
     ));
     let factory = ScriptedFactory::new(vec![control]);

@@ -351,6 +351,27 @@ async fn handle(
             let (from_port, to_port, protocol) = match style {
                 "STREAM" => (0u16, 0u16, 6u8),
                 "DATAGRAM" | "RAW" => {
+                    // Java I2P refuses to attach a datagram subsession that names
+                    // no `PORT` — `I2P_ERROR MESSAGE="DATAGRAM subsession must
+                    // specify PORT"` — while accepting it when one is present. A
+                    // service that implements the shared-Destination profile has
+                    // to hold a router to the same rule, or it will pass commands
+                    // a real router refuses. `PORT` is the datagram server the
+                    // bridge forwards to; it is not host UDP authority, and a
+                    // service that offers socket-delivered datagrams may ignore it.
+                    if options
+                        .get("PORT")
+                        .and_then(|port| port.parse::<u16>().ok())
+                        .is_none()
+                    {
+                        return reply(
+                            service,
+                            format!(
+                                "SESSION STATUS RESULT=I2P_ERROR MESSAGE=\"{style} subsession must specify PORT\"\n"
+                            ),
+                        )
+                        .await;
+                    }
                     let from = options
                         .get("FROM_PORT")
                         .and_then(|port| port.parse::<u16>().ok())
@@ -387,9 +408,13 @@ async fn handle(
                 let mut state = connection.service.state.lock().expect("service state");
                 match state.sessions.get_mut(&session) {
                     Some(entry) if entry.control_alive && !entry.children.contains_key(id) => {
-                        entry.transcript.push(format!(
-                            "SESSION ADD STYLE={style} ID={id} FROM_PORT={from_port} TO_PORT={to_port}"
-                        ));
+                        entry.transcript.push(if from_port == 0 {
+                            format!("SESSION ADD STYLE={style} ID={id}")
+                        } else {
+                            format!(
+                                "SESSION ADD STYLE={style} ID={id} PORT={from_port} FROM_PORT={from_port} TO_PORT={to_port}"
+                            )
+                        });
                         entry.children.insert(
                             id.to_owned(),
                             Child {

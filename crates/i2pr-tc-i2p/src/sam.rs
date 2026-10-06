@@ -362,6 +362,10 @@ impl SamResult {
 }
 
 /// The SAM reply families this client accepts.
+///
+/// Java I2P 2.13.0 answers a raw receive with the two-word `RAW RECEIVED`
+/// spelling while the change log in the specification uses `RAW DATA RECEIVED`,
+/// so both are accepted; see [`SamReplyKind::Raw`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SamReplyKind {
     Hello,
@@ -946,6 +950,16 @@ impl SamChannelConfig {
 /// The style spelling is the channel's own style, never the shared session's.
 /// `DESTINATION=` is deliberately never emitted: the child inherits the
 /// primary's Destination, which is the entire point of the model.
+///
+/// A datagram child carries `PORT=`. Java I2P refuses to attach a datagram
+/// subsession without it — `I2P_ERROR MESSAGE="DATAGRAM subsession must
+/// specify PORT"` — and accepts it with it, which i2pd never reaches because it
+/// rejects non-stream subsession styles outright. `PORT` names the datagram
+/// server the bridge would forward to; this client never binds or reads a host
+/// UDP port, so the value is inert here and is never paired with `HOST` or
+/// `sam.udp.host`/`sam.udp.port`. Inbound datagrams are read on the child's own
+/// bridge socket with `DATAGRAM RECEIVE`/`RAW DATA RECEIVE`, which is what keeps
+/// host UDP authority out of the managed profile.
 pub fn encode_session_add(
     kind: SamChannelKind,
     child_id: &str,
@@ -957,15 +971,17 @@ pub fn encode_session_add(
             format!("SESSION ADD STYLE={} ID={child_id}\n", SamStyle::Stream.wire())
         }
         SamChannelKind::RepliableDatagram => format!(
-            "SESSION ADD STYLE={} ID={child_id} FROM_PORT={} TO_PORT={} LISTEN_PORT={}\n",
+            "SESSION ADD STYLE={} ID={child_id} PORT={} FROM_PORT={} TO_PORT={} LISTEN_PORT={}\n",
             SamStyle::Datagram.wire(),
+            config.from_port,
             config.from_port,
             config.to_port,
             config.listen_port
         ),
         SamChannelKind::RawDatagram => format!(
-            "SESSION ADD STYLE={} ID={child_id} FROM_PORT={} TO_PORT={} LISTEN_PORT={} PROTOCOL={}\n",
+            "SESSION ADD STYLE={} ID={child_id} PORT={} FROM_PORT={} TO_PORT={} LISTEN_PORT={} PROTOCOL={}\n",
             SamStyle::Raw.wire(),
+            config.from_port,
             config.from_port,
             config.to_port,
             config.listen_port,
@@ -1204,11 +1220,19 @@ fn parse_status_line(line: &[u8], limits: &SamLimits) -> Result<SamReply, SamErr
             ("STREAM", "STATUS") => (SamReplyKind::Stream, false),
             ("DATAGRAM", "SEND") => (SamReplyKind::Datagram, false),
             ("DATAGRAM", "RECEIVED") => (SamReplyKind::Datagram, true),
-            _ => return Err(SamError::Protocol("unknown SAM reply kind")),
-        },
-        [command, middle, third] if middle == "DATA" => match (command.as_str(), third.as_str()) {
+            // The older spelling of a raw reply, which the specification's own
+            // change log uses for `RAW SEND`/`RAW RECEIVED`.
             ("RAW", "SEND" | "RECEIVE") => (SamReplyKind::Raw, false),
             ("RAW", "RECEIVED") => (SamReplyKind::Raw, true),
+            _ => return Err(SamError::Protocol("unknown SAM reply kind")),
+        },
+        // A raw reply is spelled `RAW DATA SEND`, `RAW DATA RECEIVE`, or
+        // `RAW DATA RECEIVED`. The specification text refers to the older
+        // `RAW SEND`/`RAW RECEIVED` spelling in its change log, so both are
+        // accepted rather than guessing which one a router emits.
+        [command, middle, third] if middle == "DATA" && command == "RAW" => match third.as_str() {
+            "SEND" | "RECEIVE" => (SamReplyKind::Raw, false),
+            "RECEIVED" => (SamReplyKind::Raw, true),
             _ => return Err(SamError::Protocol("unknown SAM reply kind")),
         },
         _ => return Err(SamError::Protocol("unknown SAM reply kind")),
