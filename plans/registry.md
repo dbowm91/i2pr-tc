@@ -25,7 +25,7 @@ This is the compact control surface for active planning. Canonical direction is 
 | Workstream | Milestone | Status | Plan | Dependency note |
 |---|---|---|---|---|
 | Torrent client | M001 core protocol + storage foundation | **closed** | `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md` | Closure record: `plans/closure/torrent-client/001-status.md`; implementation commit `61ace427d7157e8f168d14a3bc8cc3501fd6492f`. |
-| Torrent client | M002 I2P streaming + trackers + magnet metadata + PEX | **ready** | `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md` | M001 closed; recheck current I2P/SAM specs before implementation (in progress). |
+| Torrent client | M002 I2P streaming + trackers + magnet metadata + PEX | **active** | `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md` | Active after M001 closure and 2026-10-06 SAM/I2P BitTorrent/BEP contract recheck. |
 | Torrent client | M003 Transmission RPC compatibility | **ready** | `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md` | M001 freezes TorrentService; execute after M002 in this requested sequence. |
 | Torrent client | M004 i2pr managed-app integration | **blocked** | `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md` | M002 plus corrected/live i2pr app runtime, SAM gateway, local ingress, and persistent-data contract. |
 | Torrent client | M005 router update artifact transport | **blocked** | `plans/implementation/torrent-client/005-router-update-artifact-transport.md` | M002/M004 plus router-owned ReleaseTarget, private app invocation, and artifact staging/export. |

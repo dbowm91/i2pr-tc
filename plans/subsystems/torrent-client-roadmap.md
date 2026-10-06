@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001 closed, M002 next, M003 ready, M004/M005 blocked on external contracts
+Status: active; M001 closed, M002 active, M003 ready, M004/M005 blocked on external contracts
 
 Canonical authority:
 
@@ -68,7 +68,7 @@ Exit: fixtures prove metainfo/infohash/path correctness, peer-wire/extension cod
 
 ## M002 — I2P streaming trackers and PEX
 
-Status: ready.
+Status: active.
 
 Plan:
 `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md`

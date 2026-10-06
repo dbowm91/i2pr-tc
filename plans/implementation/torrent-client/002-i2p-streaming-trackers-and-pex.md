@@ -1,6 +1,6 @@
 # Torrent Client M002 — I2P Streaming, Trackers, Magnet Metadata, and PEX
 
-Status: ready
+Status: active
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M002--i2p-streaming-trackers-and-pex`
@@ -9,6 +9,17 @@ Primary class: capability + network-protocol infrastructure
 
 Hard dependency: M001 closed.
 Interface dependency: current I2P SAM/BitTorrent specifications rechecked at implementation start.
+
+## Contract recheck (2026-10-06)
+
+Implementation baseline and external contract sources were rechecked before M002 code:
+
+- i2pr `main` at `144c54da2eaaa46497955e0e371f06ab6efcd1b1`; managed-app Plan 354 provides listener-independent SAM/I2CP private byte-stream seams, and Plan 355 composes them behind a router-owned principal gateway. These are backend seams, not permission for this client to open host SAM sockets.
+- [I2P SAM v3](https://geti2p.net/en/docs/api/samv3): STREAM and NAMING operations are session/control commands; PRIMARY supports multiple session styles over a shared I2P destination. M002 consumes an injected I2P session adapter and leaves its router/app ownership to M004.
+- [I2P BitTorrent application guidance](https://geti2p.net/en/docs/applications/bittorrent): compact peers are 32-byte Destination hashes without ports; hash-only peers resolve through `<hash>.b32.i2p`; support I2P hostname/Destination announce forms and ignore non-I2P announce URLs.
+- [BEP 10](https://www.bittorrent.org/beps/bep_0010.html), [BEP 9](https://www.bittorrent.org/beps/bep_0009.html), and [BEP 11](https://www.bittorrent.org/beps/bep_0011.html): extension IDs are peer-local, metadata is transferred in 16 KiB pieces and verified against the infohash, and PEX is carried by the extension protocol. I2P PEX keeps its project-specific 32-byte peer record contract rather than standard IP compact tuples.
+
+The main branch has advanced beyond the separately named `codex/plan-345-native-app-runtime` branch: that branch remains at `ea7b5ccef9bacbddf826f074cc59d891849a1424`, while the current main tree includes Plans 354–355. No production SAM dialer, app manager, or router update artifact interface is pulled into M002.
 
 ## Objective
 

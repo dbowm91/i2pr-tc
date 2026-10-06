@@ -6,16 +6,16 @@ This record captures the implementation and closure evidence on `codex/planning-
 
 ## Implementation commits
 
-- `36ef50a` — initial Rust workspace, core/storage primitives, parser and storage fixtures, fuzz targets, dependency guard, architecture snapshot, and registry activation.
-- `66ef59d` — recorded the current i2pr upstream contract state and confirmed M004/M005 remain blocked.
-- `d5b4539` — recorded the initial implementation checkpoint and closure gaps.
-- `edfc7d6` — corrected peer availability replacement and multi-block in-flight ownership.
-- `a1ad537` — added bounded incremental peer framing and hash-checked storage writes.
-- `15c1002` — added durable service state, bounded events/priorities, resume-root safety, cancellation, metadata bounds, boundary guards, and fuzz corpora.
-- `73cbc38` — made persistent progress depend on hash-verified storage writes and recovery-derived piece verification.
-- `a2d32af` — composed `PieceMap`, bounded block assembly, storage writes, startup recovery, and runtime fixtures; retained fuzz discoveries.
-- `762887a` — connected peer-wire session state to runtime availability, cancellation, download, and verified upload paths; bounded catalog reads and resume bitmaps.
-- `61ace42` — added CI gates, expanded platform path and peer ownership fixtures, updated architecture and rechecked upstream handoff evidence.
+- `36ef50a5b16ad85f0c4edcb03cffbf8f51d867d9` — initial Rust workspace, core/storage primitives, parser and storage fixtures, fuzz targets, dependency guard, architecture snapshot, and registry activation.
+- `66ef59d261c51df2394e42cf4cbf97515edd3ad8` — recorded the current i2pr upstream contract state and confirmed M004/M005 remain blocked.
+- `d5b45397ae04820d92f52dd4727dff7d296f2670` — recorded the initial implementation checkpoint and closure gaps.
+- `edfc7d65fcbe9474c25fc82effb8119708f7f724` — corrected peer availability replacement and multi-block in-flight ownership.
+- `a1ad537a3e8b0f11451c68bddc4a5ce4eb189039` — added bounded incremental peer framing and hash-checked storage writes.
+- `15c100297e4e4bc432f8f59cffe45a73058e049b` — added durable service state, bounded events/priorities, resume-root safety, cancellation, metadata bounds, boundary guards, and fuzz corpora.
+- `73cbc38c91c13cda59715e7f3921b1af3a32b3dd` — made persistent progress depend on hash-verified storage writes and recovery-derived piece verification.
+- `a2d32af3165f4f20ca8b58e74b23fda61f47983e` — composed `PieceMap`, bounded block assembly, storage writes, startup recovery, and runtime fixtures; retained fuzz discoveries.
+- `762887a87821bd6bb76184b35430095a0091fd39` — connected peer-wire session state to runtime availability, cancellation, download, and verified upload paths; bounded catalog reads and resume bitmaps.
+- `61ace427d7157e8f168d14a3bc8cc3501fd6492f` — added CI gates, expanded platform path and peer ownership fixtures, updated architecture and rechecked upstream handoff evidence.
 
 ## Landed scope
 
