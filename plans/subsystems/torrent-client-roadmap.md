@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001 and M003 closed, historical M002 conditionally closed, M002 C001 ready, C002/M004/M005 blocked
+Status: active; M001 and M003 closed, historical M002 conditionally closed, M002 C001 closed, C002 in progress, M004/M005 blocked
 
 Canonical authority:
 
@@ -101,10 +101,13 @@ Those findings are owned by C001; do not rewrite the historical M002 record.
 
 ## M002 C001 — SAM client boundary, runtime I/O, and live-transport hardening
 
-Status: ready.
+Status: closed.
 
 Plan:
 `plans/implementation/torrent-client/006-m002-c001-sam-runtime-hardening.md`
+
+Closure:
+`plans/closure/torrent-client/006-m002-c001-status.md`
 
 C001 must:
 
@@ -122,6 +125,14 @@ C001 must:
 Exit: the I2P transport is composition-ready for M004 without a direct host SAM
 fallback or a torrent-specific router gateway.
 
+Reached. The application-side SAM-v3 client, the fingerprint removals, the
+per-torrent state ownership with generation-checked persistence reservations,
+and the bounded storage offload are implemented and verified. Magnet and
+inbound transfer qualification passes deterministically. Live-router
+qualification is environment-dependent and was not executed; M004 owns running
+it against a real bridge as its first act, and that is the medium-severity
+residual finding in the C001 closure.
+
 ## M003 — Transmission RPC compatibility
 
 Status: closed.
@@ -137,7 +148,7 @@ listener. M004 will supply host-owned ingress.
 
 ## C002 — Planning, documentation, MSRV, and branch integration reconciliation
 
-Status: blocked on C001 closure.
+Status: ready; unblocked by the C001 closure.
 
 Plan:
 `plans/implementation/torrent-client/007-c002-foundation-branch-reconciliation.md`
