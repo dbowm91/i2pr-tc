@@ -2,11 +2,18 @@
 //!
 //! This crate deliberately has no host-network connector. Managed runtime
 //! composition supplies [`I2pSession`] and owns its SAM/I2CP lifecycle.
+//!
+//! [`sam`] implements that lifecycle directly: the application asks
+//! [`sam::SamConnectionFactory`] for one raw SAM protocol byte stream and speaks
+//! SAM v3 over it. No router or gateway type is named anywhere in this crate,
+//! because the managed runtime's contract is "exact ordered protocol octets on a
+//! stream this app asked for", which needs no router vocabulary at all.
 
 pub mod identity;
 pub mod metadata;
 pub mod peer;
 pub mod pex;
+pub mod sam;
 pub mod tracker;
 
 use async_trait::async_trait;

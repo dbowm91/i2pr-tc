@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 i2pr-tc-core = { path = "../crates/i2pr-tc-core" }
 i2pr-tc-storage = { path = "../crates/i2pr-tc-storage" }
+i2pr-tc-i2p = { path = "../crates/i2pr-tc-i2p" }
 
 [[bin]]
 name = "bencode"
@@ -44,6 +45,13 @@ bench = false
 [[bin]]
 name = "resume"
 path = "fuzz_targets/resume.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sam"
+path = "fuzz_targets/sam.rs"
 test = false
 doc = false
 bench = false

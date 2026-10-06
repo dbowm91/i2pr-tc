@@ -15,4 +15,6 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+async-trait.workspace = true
+i2pr-tc-core = { path = "../i2pr-tc-core", version = "0.1.0" }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }

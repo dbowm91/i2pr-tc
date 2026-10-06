@@ -173,6 +173,7 @@ async fn run_outbound_stream(
         context.limits.handshake_timeout,
     )
     .await?;
+    eprintln!("DBG got remote handshake");
     if remote.info_hash != snapshot.info_hash {
         return Err(PeerError::Protocol);
     }
@@ -800,15 +801,24 @@ fn parse_metadata_size(payload: &[u8], max: usize) -> Result<Option<usize>, Peer
 }
 
 fn encode_extension_handshake(metadata_size: Option<usize>) -> Vec<u8> {
-    let mut out = b"d1:md8:i2p_pex".to_vec();
+    // `i2p_pex` is seven bytes. Declaring eight produced a dictionary that no
+    // conformant parser could read, which silently disabled every extension
+    // exchange with a real peer.
+    let mut out = b"d1:md7:i2p_pex".to_vec();
     out.extend_from_slice(
-        format!("i{LOCAL_UT_PEX_ID}e11:ut_metadatai{LOCAL_UT_METADATA_ID}ee").as_bytes(),
+        format!("i{LOCAL_UT_PEX_ID}e11:ut_metadatai{LOCAL_UT_METADATA_ID}e").as_bytes(),
     );
+    // Closes the extension map. `metadata_size` is a sibling of `m` in the
+    // handshake dictionary, so it can only be written after this point.
+    out.push(b'e');
     if let Some(size) = metadata_size {
         out.extend_from_slice(format!("13:metadata_sizei{size}e").as_bytes());
     }
-    out.extend_from_slice(b"1:v11:i2pr-tc/0.1e");
+    // Closes the handshake dictionary.
     out.push(b'e');
+    // The BEP 10 `v` key is deliberately omitted. It is a peer-visible client
+    // version fingerprint, and qBittorrent's Anonymous Mode already ships the
+    // client with no `v` value in its extension handshake.
     out
 }
 
@@ -990,6 +1000,309 @@ mod tests {
         server.await.unwrap();
         let report = result.unwrap();
         assert_eq!(report.downloaded_pieces, 1);
+        assert_eq!(
+            runtime.service().get(id).unwrap().status,
+            TorrentStatus::Completed
+        );
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extension_handshake_advertises_support_without_a_version_fingerprint() {
+        let without_metadata = String::from_utf8(encode_extension_handshake(None)).unwrap();
+        assert_eq!(
+            without_metadata,
+            format!("d1:md7:i2p_pexi{LOCAL_UT_PEX_ID}e11:ut_metadatai{LOCAL_UT_METADATA_ID}eee")
+        );
+        // `metadata_size` is a sibling of `m`, not a member of it.
+        let with_size = String::from_utf8(encode_extension_handshake(Some(4096))).unwrap();
+        // `metadata_size` sits between the extension map and the terminator of
+        // the handshake dictionary that contains it.
+        assert_eq!(
+            with_size,
+            concat!(
+                "d1:md7:i2p_pexi1e11:ut_metadatai2ee",
+                "13:metadata_sizei4096ee"
+            )
+        );
+        // Both shapes must round-trip through the same parsers this client uses
+        // on a peer handshake, otherwise the client cannot read what it writes.
+        for (payload, expected_size) in [(&without_metadata, None), (&with_size, Some(4096))] {
+            let map = parse_extension_map(payload.as_bytes(), 64)
+                .unwrap_or_else(|e| panic!("map parse failed for {payload}: {e:?}"));
+            assert_eq!(map.get("ut_metadata"), Some(&LOCAL_UT_METADATA_ID));
+            assert_eq!(map.get("i2p_pex"), Some(&LOCAL_UT_PEX_ID));
+            assert!(
+                matches!(
+                    parse_metadata_size(payload.as_bytes(), MAX_METADATA_BYTES),
+                    Ok(size) if size == expected_size
+                ),
+                "size parse mismatch for {payload}"
+            );
+        }
+        for payload in [&without_metadata, &with_size] {
+            assert!(
+                !payload.contains("1:v"),
+                "extension handshake advertised a client version: {payload}"
+            );
+            assert!(
+                !payload.contains("i2pr-tc"),
+                "extension handshake advertised the product name: {payload}"
+            );
+        }
+    }
+
+    /// A session that yields one scripted inbound stream and then parks, so
+    /// `serve_incoming` stays alive until cancellation releases its children.
+    struct AcceptOnceSession {
+        hash: [u8; 32],
+        peer: crate::identity::Destination,
+        pending: std::sync::Mutex<Option<crate::I2pStream>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::I2pSession for AcceptOnceSession {
+        fn local_peer_hash(&self) -> [u8; 32] {
+            self.hash
+        }
+
+        async fn lookup(
+            &self,
+            _name: &str,
+        ) -> Result<crate::identity::Destination, crate::TransportError> {
+            Err(crate::TransportError::Session(
+                "no lookup in this fixture".into(),
+            ))
+        }
+
+        async fn connect(
+            &self,
+            _destination: &crate::identity::Destination,
+            _port: u16,
+        ) -> Result<crate::I2pStream, crate::TransportError> {
+            Err(crate::TransportError::Session(
+                "no connect in this fixture".into(),
+            ))
+        }
+
+        async fn accept(
+            &self,
+        ) -> Result<(crate::identity::Destination, crate::I2pStream), crate::TransportError>
+        {
+            // The guard is released before parking, so the future stays `Send`.
+            let next = self.pending.lock().unwrap().take();
+            match next {
+                Some(stream) => Ok((self.peer.clone(), stream)),
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    fn magnet_uri(hash: [u8; 20]) -> String {
+        let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("magnet:?xt=urn:btih:{hex}&dn=x")
+    }
+
+    #[tokio::test]
+    async fn magnet_metadata_is_promoted_and_then_downloads_a_verified_piece() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let bytes = metainfo();
+        let parsed = i2pr_tc_core::metainfo::parse(&bytes, Default::default()).unwrap();
+        let hash = parsed.info_hash.0;
+        let info = parsed.info_bytes;
+        let id = runtime.add_magnet(&magnet_uri(hash)).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        assert!(
+            runtime.service().get_metainfo(id).unwrap().is_none(),
+            "magnet registration must not synthesise metainfo"
+        );
+        let (client, mut remote) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let mut request = [0; 68];
+            remote.read_exact(&mut request).await.unwrap();
+            let handshake = Handshake {
+                reserved: [0; 8],
+                info_hash: hash,
+                peer_id: [9; 20],
+            };
+            remote
+                .write_all(&encode_handshake(&handshake))
+                .await
+                .unwrap();
+            // A magnet client has no metainfo, so its own extension handshake
+            // advertises support without a metadata size.
+            assert!(matches!(
+                read_frame(&mut remote).await,
+                Message::Extension { id: 0, .. }
+            ));
+            write_frame(
+                &mut remote,
+                &Message::Extension {
+                    id: 0,
+                    payload: format!("d1:md11:ut_metadatai2ee13:metadata_sizei{}ee", info.len())
+                        .into_bytes(),
+                },
+            )
+            .await;
+            let Message::Extension { id, payload } = read_frame(&mut remote).await else {
+                panic!("expected a ut_metadata request");
+            };
+            assert_eq!(id, LOCAL_UT_METADATA_ID);
+            assert_eq!(payload, b"d8:msg_typei0e5:piecei0ee".to_vec());
+            write_frame(
+                &mut remote,
+                &Message::Extension {
+                    id: LOCAL_UT_METADATA_ID,
+                    payload: [
+                        format!("d8:msg_typei1e5:piecei0e10:total_sizei{}ee", info.len())
+                            .into_bytes(),
+                        info.clone(),
+                    ]
+                    .concat(),
+                },
+            )
+            .await;
+            write_frame(&mut remote, &Message::Unchoke).await;
+            write_frame(&mut remote, &Message::Bitfield(vec![0x80])).await;
+            let Message::Request {
+                index,
+                begin,
+                length,
+            } = read_frame(&mut remote).await
+            else {
+                panic!("expected a piece request after metadata promotion");
+            };
+            assert_eq!((index, begin, length), (0, 0, 4));
+            write_frame(
+                &mut remote,
+                &Message::Piece {
+                    index,
+                    begin,
+                    block: b"data".to_vec(),
+                },
+            )
+            .await;
+            // Closing here is the seeder's end-of-transfer signal.
+        });
+        let cancellation = Cancellation::default();
+        let context = PeerContext {
+            runtime: &runtime,
+            id,
+            peer: DestinationHash([7; 32]),
+            local_hash: DestinationHash([2; 32]),
+            cancellation: &cancellation,
+            limits: PeerLimits::default(),
+            sources: Arc::new(Mutex::new(PeerSourceSet::default())),
+        };
+        let result = run_outbound_stream(&context, Box::pin(client), [1; 20]).await;
+        let server = server.await;
+        if result.is_err() {
+            panic!("magnet peer run failed: {result:?} (seeder: {server:?})");
+        }
+        server.unwrap();
+        let report = result.unwrap();
+        assert!(report.metadata_promoted, "metadata was never promoted");
+        assert_eq!(report.downloaded_pieces, 1);
+        assert_eq!(
+            runtime.service().get(id).unwrap().status,
+            TorrentStatus::Completed
+        );
+        assert!(runtime.service().get_metainfo(id).unwrap().is_some());
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inbound_peer_delivers_a_verified_piece_to_the_accepting_client() {
+        let root = root();
+        let runtime =
+            Arc::new(TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap());
+        let bytes = metainfo();
+        let hash = i2pr_tc_core::metainfo::parse(&bytes, Default::default())
+            .unwrap()
+            .info_hash
+            .0;
+        let id = runtime.add_metainfo(&bytes).unwrap();
+        runtime.command(TorrentCommand::Start(id)).unwrap();
+        let (client, mut remote) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            // The accepting side reads the connecting peer's handshake first.
+            let handshake = Handshake {
+                reserved: [0; 8],
+                info_hash: hash,
+                peer_id: [8; 20],
+            };
+            remote
+                .write_all(&encode_handshake(&handshake))
+                .await
+                .unwrap();
+            let mut local = [0; 68];
+            remote.read_exact(&mut local).await.unwrap();
+            assert!(matches!(
+                read_frame(&mut remote).await,
+                Message::Extension { id: 0, .. }
+            ));
+            write_frame(
+                &mut remote,
+                &Message::Extension {
+                    id: 0,
+                    payload: b"d1:mdee".to_vec(),
+                },
+            )
+            .await;
+            write_frame(&mut remote, &Message::Unchoke).await;
+            write_frame(&mut remote, &Message::Bitfield(vec![0x80])).await;
+            let Message::Request { index, begin, .. } = read_frame(&mut remote).await else {
+                panic!("inbound peer received no piece request");
+            };
+            write_frame(
+                &mut remote,
+                &Message::Piece {
+                    index,
+                    begin,
+                    block: b"data".to_vec(),
+                },
+            )
+            .await;
+            let mut sink = [0; 8];
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), remote.read(&mut sink))
+                .await;
+        });
+        let peer = crate::identity::Destination::from_bytes(vec![3; 387]).unwrap();
+        let session = Arc::new(AcceptOnceSession {
+            hash: [2; 32],
+            peer,
+            pending: std::sync::Mutex::new(Some(Box::pin(client))),
+        });
+        let cancellation = Cancellation::default();
+        let serving = tokio::spawn(serve_incoming(
+            session,
+            runtime.clone(),
+            [1; 20],
+            cancellation.clone(),
+            PeerLimits::default(),
+            4,
+            Arc::new(Mutex::new(PeerSourceSet::default())),
+        ));
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if runtime.service().get(id).unwrap().status == TorrentStatus::Completed {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if completed.is_err() {
+            serving.abort();
+            server.abort();
+            panic!("inbound transfer never completed");
+        }
+        server.await.unwrap();
+        cancellation.cancel();
+        serving.await.unwrap().unwrap();
         assert_eq!(
             runtime.service().get(id).unwrap().status,
             TorrentStatus::Completed

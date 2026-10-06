@@ -1,4 +1,6 @@
 //! Test-only loopback qualification against the installed Transmission client.
+//!
+//! boundary-guard:test-only
 use i2pr_tc_storage::{Cancellation, TorrentRuntime};
 use i2pr_tc_transmission::{adapter::TransmissionAdapter, http::RpcEndpoint, ids::RpcIdStore};
 use std::{

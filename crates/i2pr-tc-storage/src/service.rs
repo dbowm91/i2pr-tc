@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
 };
 
@@ -49,6 +49,30 @@ struct State {
     records: BTreeMap<TorrentId, Record>,
     events: VecDeque<ServiceEvent>,
     sequence: u64,
+    /// Monotonic counter bumped on every in-memory record mutation.
+    revision: u64,
+    /// Latest revision produced for each record, used to decide whether a
+    /// finished durable write is still the authority for that record.
+    revisions: BTreeMap<TorrentId, u64>,
+}
+
+impl State {
+    fn touch(&mut self, id: TorrentId) -> u64 {
+        self.revision = self.revision.saturating_add(1);
+        self.revisions.insert(id, self.revision);
+        self.revision
+    }
+    fn revision_of(&self, id: TorrentId) -> u64 {
+        self.revisions.get(&id).copied().unwrap_or_default()
+    }
+}
+
+/// One in-memory record mutation awaiting its durable write.
+#[derive(Clone)]
+struct CatalogWrite {
+    id: TorrentId,
+    previous: Option<Record>,
+    revision: u64,
 }
 
 /// A filesystem-backed implementation of the native service contract.
@@ -57,6 +81,9 @@ pub struct PersistentTorrentService {
     root: PathBuf,
     directory: PathBuf,
     state: Mutex<State>,
+    /// Canonical-root-keyed handles so every caller over one payload root shares
+    /// a single [`Storage::prepare`]/write/read serialization lock.
+    storages: Mutex<BTreeMap<PathBuf, Arc<Storage>>>,
 }
 
 impl PersistentTorrentService {
@@ -176,7 +203,99 @@ impl PersistentTorrentService {
                 records,
                 ..State::default()
             }),
+            storages: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Return the shared [`Storage`] handle for one payload or catalog root.
+    ///
+    /// Handles are cached per canonical root so two callers over the same
+    /// payload exclude each other through one `disk` lock instead of creating
+    /// independent locks. The cache lock is never held across filesystem work.
+    fn storage_for(&self, root: &Path) -> Result<Arc<Storage>, StorageError> {
+        if let Some(storage) = self
+            .storages
+            .lock()
+            .map_err(|_| StorageError::Concurrency)?
+            .get(root)
+            .cloned()
+        {
+            return Ok(storage);
+        }
+        let storage = Arc::new(Storage::open(root)?);
+        let key = storage.root().to_path_buf();
+        Ok(self
+            .storages
+            .lock()
+            .map_err(|_| StorageError::Concurrency)?
+            .entry(key)
+            .or_insert(storage)
+            .clone())
+    }
+
+    pub(crate) fn payload_storage(&self, id: TorrentId) -> Result<Arc<Storage>, StorageError> {
+        self.storage_for(&self.payload_root(id))
+    }
+
+    /// Persist one record snapshot outside the catalog lock.
+    ///
+    /// The snapshot is re-read from memory so a concurrent mutation is never
+    /// lost, and a failed write rolls the in-memory record back only while it is
+    /// still the exact revision this writer produced. A record removed while the
+    /// write was in flight leaves no orphan file behind.
+    fn commit_catalog_write(&self, write: &CatalogWrite) -> Result<(), ServiceError> {
+        let CatalogWrite {
+            id,
+            previous,
+            revision,
+        } = write.clone();
+        let snapshot = {
+            let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            state
+                .records
+                .get(&id)
+                .ok_or(ServiceError::NotFound)?
+                .clone()
+        };
+        if atomic_json(&record_path(&self.directory, id), &snapshot).is_err() {
+            let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            if state.revision_of(id) == revision {
+                match previous {
+                    Some(previous) => {
+                        state.records.insert(id, previous);
+                        state.touch(id);
+                    }
+                    None => {
+                        state.records.remove(&id);
+                        state.revisions.remove(&id);
+                    }
+                }
+            }
+            return Err(ServiceError::Storage);
+        }
+        // Converge on the newest in-memory record: while a concurrent mutation
+        // has advanced this record, rewrite its snapshot so the last rename to
+        // land always carries the newest state.
+        let mut revision = revision;
+        loop {
+            let next = {
+                let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+                match state.records.get(&id) {
+                    None => {
+                        // Removed while this write was in flight: drop the file
+                        // this writer produced so a removed torrent is not
+                        // resurrected on the next open.
+                        let _ = fs::remove_file(record_path(&self.directory, id));
+                        return Err(ServiceError::NotFound);
+                    }
+                    Some(_) if state.revision_of(id) == revision => return Ok(()),
+                    Some(record) => (state.revision_of(id), record.clone()),
+                }
+            };
+            atomic_json(&record_path(&self.directory, id), &next.1)
+                .map_err(|_| ServiceError::Storage)?;
+            revision = next.0;
+        }
     }
 
     fn insert(
@@ -185,8 +304,17 @@ impl PersistentTorrentService {
         metainfo: Option<&[u8]>,
     ) -> Result<TorrentId, ServiceError> {
         let id = record.snapshot.id;
-        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
-        if let Some(existing) = state.records.get(&id) {
+        // Phase one: decide the durable snapshot under the catalog lock only.
+        let promoted = {
+            let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            if !state.records.contains_key(&id) {
+                if state.records.len() >= MAX_CATALOG_RECORDS {
+                    return Err(ServiceError::InvalidInput);
+                }
+                drop(state);
+                return self.publish_record(id, record, metainfo, false);
+            }
+            let existing = state.records.get(&id).ok_or(ServiceError::NotFound)?;
             if existing.snapshot.info_hash != record.snapshot.info_hash {
                 return Err(ServiceError::Conflict);
             }
@@ -219,29 +347,121 @@ impl PersistentTorrentService {
             {
                 *new = *old;
             }
-            if let Some(bytes) = metainfo {
-                atomic_write(&metainfo_path(&self.directory, id), bytes)
-                    .map_err(|_| ServiceError::Storage)?;
-            }
-            if atomic_json(&record_path(&self.directory, id), &record).is_err() {
-                return Err(ServiceError::Storage);
-            }
-            state.records.insert(id, record);
-            emit(&mut state, id, ServiceEventKind::MetadataAvailable)?;
-            return Ok(id);
-        }
-        if state.records.len() >= MAX_CATALOG_RECORDS {
-            return Err(ServiceError::InvalidInput);
-        }
+            true
+        };
+        self.publish_record(id, record, metainfo, promoted)
+    }
+
+    /// Write a prepared record snapshot to disk and publish it in memory.
+    ///
+    /// No catalog lock is held while the record and metainfo files are written.
+    fn publish_record(
+        &self,
+        id: TorrentId,
+        record: Record,
+        metainfo: Option<&[u8]>,
+        promoted: bool,
+    ) -> Result<TorrentId, ServiceError> {
         if let Some(bytes) = metainfo {
             atomic_write(&metainfo_path(&self.directory, id), bytes)
                 .map_err(|_| ServiceError::Storage)?;
         }
-        let path = record_path(&self.directory, id);
-        atomic_json(&path, &record).map_err(|_| ServiceError::Storage)?;
-        state.records.insert(id, record);
-        emit(&mut state, id, ServiceEventKind::TorrentAdded)?;
+        atomic_json(&record_path(&self.directory, id), &record)
+            .map_err(|_| ServiceError::Storage)?;
+        let write = {
+            let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            if promoted && !state.records.contains_key(&id) {
+                // Removed while this write was in flight; keep the durable files
+                // and the catalog consistent with each other.
+                drop(state);
+                let _ = fs::remove_file(record_path(&self.directory, id));
+                if metainfo.is_some() {
+                    let _ = fs::remove_file(metainfo_path(&self.directory, id));
+                }
+                return Err(ServiceError::NotFound);
+            }
+            let revision = state.touch(id);
+            state.records.insert(id, record);
+            CatalogWrite {
+                id,
+                previous: None,
+                revision,
+            }
+        };
+        self.commit_catalog_write(&write)?;
+        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+        emit(
+            &mut state,
+            id,
+            if promoted {
+                ServiceEventKind::MetadataAvailable
+            } else {
+                ServiceEventKind::TorrentAdded
+            },
+        )?;
         Ok(id)
+    }
+
+    /// Remove one torrent's durable records and in-memory catalog entry.
+    ///
+    /// Every payload and catalog filesystem operation runs with no catalog lock
+    /// held; the in-memory entry is dropped last so a failed removal leaves the
+    /// catalog exactly as it was.
+    fn remove_torrent(&self, id: TorrentId, delete_data: bool) -> Result<(), ServiceError> {
+        let info_hash = {
+            let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            state
+                .records
+                .get(&id)
+                .ok_or(ServiceError::NotFound)?
+                .snapshot
+                .info_hash
+        };
+        let payload_root = self.payload_root(id);
+        if delete_data {
+            let bytes = read_metainfo_file(&metainfo_path(&self.directory, id))?;
+            let parsed =
+                metainfo::parse(&bytes, Default::default()).map_err(|_| ServiceError::Storage)?;
+            if parsed.info_hash.0 != info_hash {
+                return Err(ServiceError::Storage);
+            }
+            let download_root = self.root.join("downloads");
+            for candidate in [download_root, payload_root.clone()] {
+                if !candidate.exists() {
+                    continue;
+                }
+                let metadata =
+                    fs::symlink_metadata(&candidate).map_err(|_| ServiceError::Storage)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(ServiceError::Storage);
+                }
+            }
+            if payload_root.exists() {
+                // The shared payload handle keeps this removal serialized with
+                // in-flight writes for the same payload root.
+                self.payload_storage(id)
+                    .map_err(|_| ServiceError::Storage)?
+                    .remove_data(&parsed.files)
+                    .map_err(|_| ServiceError::Storage)?;
+            }
+        }
+        fs::remove_file(record_path(&self.directory, id)).map_err(|_| ServiceError::Storage)?;
+        let meta = metainfo_path(&self.directory, id);
+        if meta.exists() {
+            let _ = fs::remove_file(meta);
+        }
+        {
+            let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            if state.records.remove(&id).is_none() {
+                return Err(ServiceError::NotFound);
+            }
+            state.touch(id);
+        }
+        if let Ok(mut storages) = self.storages.lock() {
+            storages.remove(&payload_root);
+        }
+        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+        emit(&mut state, id, ServiceEventKind::TorrentRemoved)
     }
 }
 
@@ -305,31 +525,19 @@ impl TorrentService for PersistentTorrentService {
     }
 
     fn get_metainfo(&self, id: TorrentId) -> Result<Option<metainfo::TorrentMeta>, ServiceError> {
-        let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
-        let record = state.records.get(&id).ok_or(ServiceError::NotFound)?;
-        if !matches!(&record.source, Source::Metainfo) {
-            return Ok(None);
-        }
-        let path = metainfo_path(&self.directory, id);
-        let metadata = fs::symlink_metadata(&path).map_err(|_| ServiceError::Storage)?;
-        let max = metainfo::MetaLimits::default().encoded as u64;
-        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max {
-            return Err(ServiceError::Storage);
-        }
-        let mut bytes = Vec::new();
-        File::open(path)
-            .map_err(|_| ServiceError::Storage)?
-            .take(max + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| ServiceError::Storage)?;
-        if bytes.len() as u64 > max {
-            return Err(ServiceError::Storage);
-        }
+        let (info_hash, total_bytes) = {
+            let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            let record = state.records.get(&id).ok_or(ServiceError::NotFound)?;
+            if !matches!(&record.source, Source::Metainfo) {
+                return Ok(None);
+            }
+            (record.snapshot.info_hash, record.snapshot.total_bytes)
+        };
+        // Metainfo bytes are read and parsed with no catalog lock held.
+        let bytes = read_metainfo_file(&metainfo_path(&self.directory, id))?;
         let meta =
             metainfo::parse(&bytes, Default::default()).map_err(|_| ServiceError::Storage)?;
-        if meta.info_hash.0 != record.snapshot.info_hash
-            || meta.total_length != record.snapshot.total_bytes
-        {
+        if meta.info_hash.0 != info_hash || meta.total_length != total_bytes {
             return Err(ServiceError::Storage);
         }
         Ok(Some(meta))
@@ -349,7 +557,6 @@ impl TorrentService for PersistentTorrentService {
             .ok_or(ServiceError::NotFound)
     }
     fn command(&self, command: TorrentCommand) -> Result<(), ServiceError> {
-        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
         let target = match &command {
             TorrentCommand::Start(id)
             | TorrentCommand::Stop(id)
@@ -358,154 +565,109 @@ impl TorrentService for PersistentTorrentService {
             TorrentCommand::Remove { id, .. } | TorrentCommand::SetLimits { id, .. } => *id,
             TorrentCommand::SetFilePriorities { id, .. } => *id,
         };
-        let previous = state.records.get(&target).cloned();
-        let (id, kind) = match command {
-            TorrentCommand::Start(id) => {
-                let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
-                if !matches!(
-                    record.snapshot.status,
-                    TorrentStatus::Stopped | TorrentStatus::Starting | TorrentStatus::Completed
-                ) {
-                    return Err(ServiceError::Conflict);
-                }
-                record.snapshot.status = TorrentStatus::Running;
-                record.snapshot.desired_running = true;
-                (id, ServiceEventKind::StatusChanged(TorrentStatus::Running))
-            }
-            TorrentCommand::Stop(id) => {
-                let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
-                if !matches!(
-                    record.snapshot.status,
-                    TorrentStatus::Starting | TorrentStatus::Running | TorrentStatus::Checking
-                ) {
-                    return Err(ServiceError::Conflict);
-                }
-                record.snapshot.status = TorrentStatus::Stopped;
-                record.snapshot.desired_running = false;
-                (id, ServiceEventKind::StatusChanged(TorrentStatus::Stopped))
-            }
-            TorrentCommand::Verify(id) => {
-                let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
-                if record.snapshot.status == TorrentStatus::Checking {
-                    return Err(ServiceError::Conflict);
-                }
-                record.snapshot.status = TorrentStatus::Checking;
-                record.snapshot.verified_bytes = 0;
-                record.snapshot.verified_pieces.fill(false);
-                (id, ServiceEventKind::StatusChanged(TorrentStatus::Checking))
-            }
-            TorrentCommand::Remove { id, delete_data } => {
-                let record = state.records.get(&id).ok_or(ServiceError::NotFound)?;
-                if delete_data {
-                    if !matches!(&record.source, Source::Metainfo) {
-                        return Err(ServiceError::Unsupported);
+        if let TorrentCommand::Remove { id, delete_data } = command {
+            return self.remove_torrent(id, delete_data);
+        }
+        // Phase one: the in-memory transition, with no filesystem work.
+        let (id, kind, write) = {
+            let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            let previous = state.records.get(&target).cloned();
+            let (id, kind, persist) = match command {
+                TorrentCommand::Start(id) => {
+                    let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+                    if !matches!(
+                        record.snapshot.status,
+                        TorrentStatus::Stopped | TorrentStatus::Starting | TorrentStatus::Completed
+                    ) {
+                        return Err(ServiceError::Conflict);
                     }
-                    let meta_path = metainfo_path(&self.directory, id);
-                    let metadata =
-                        fs::symlink_metadata(&meta_path).map_err(|_| ServiceError::Storage)?;
-                    if metadata.file_type().is_symlink()
-                        || !metadata.is_file()
-                        || metadata.len() > metainfo::MetaLimits::default().encoded as u64
-                    {
-                        return Err(ServiceError::Storage);
-                    }
-                    let mut bytes = Vec::new();
-                    File::open(meta_path)
-                        .map_err(|_| ServiceError::Storage)?
-                        .take(metainfo::MetaLimits::default().encoded as u64 + 1)
-                        .read_to_end(&mut bytes)
-                        .map_err(|_| ServiceError::Storage)?;
-                    let parsed = metainfo::parse(&bytes, Default::default())
-                        .map_err(|_| ServiceError::Storage)?;
-                    if parsed.info_hash.0 != record.snapshot.info_hash {
-                        return Err(ServiceError::Storage);
-                    }
-                    let payload_root = self.payload_root(id);
-                    let download_root = self.root.join("downloads");
-                    if download_root.exists()
-                        && fs::symlink_metadata(&download_root)
-                            .map_err(|_| ServiceError::Storage)?
-                            .file_type()
-                            .is_symlink()
-                    {
-                        return Err(ServiceError::Storage);
-                    }
-                    if download_root.exists()
-                        && !fs::symlink_metadata(&download_root)
-                            .map_err(|_| ServiceError::Storage)?
-                            .is_dir()
-                    {
-                        return Err(ServiceError::Storage);
-                    }
-                    if payload_root.exists() {
-                        let payload_metadata = fs::symlink_metadata(&payload_root)
-                            .map_err(|_| ServiceError::Storage)?;
-                        if payload_metadata.file_type().is_symlink() || !payload_metadata.is_dir() {
-                            return Err(ServiceError::Storage);
-                        }
-                        let storage = crate::Storage::open(&payload_root)
-                            .map_err(|_| ServiceError::Storage)?;
-                        storage
-                            .remove_data(&parsed.files)
-                            .map_err(|_| ServiceError::Storage)?;
-                    }
+                    record.snapshot.status = TorrentStatus::Running;
+                    record.snapshot.desired_running = true;
+                    (
+                        id,
+                        ServiceEventKind::StatusChanged(TorrentStatus::Running),
+                        true,
+                    )
                 }
-                fs::remove_file(record_path(&self.directory, id))
-                    .map_err(|_| ServiceError::Storage)?;
-                let meta = metainfo_path(&self.directory, id);
-                if meta.exists() {
-                    let _ = fs::remove_file(meta);
+                TorrentCommand::Stop(id) => {
+                    let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+                    if !matches!(
+                        record.snapshot.status,
+                        TorrentStatus::Starting | TorrentStatus::Running | TorrentStatus::Checking
+                    ) {
+                        return Err(ServiceError::Conflict);
+                    }
+                    record.snapshot.status = TorrentStatus::Stopped;
+                    record.snapshot.desired_running = false;
+                    (
+                        id,
+                        ServiceEventKind::StatusChanged(TorrentStatus::Stopped),
+                        true,
+                    )
                 }
-                state.records.remove(&id);
-                (id, ServiceEventKind::TorrentRemoved)
-            }
-            TorrentCommand::Reannounce(id) => {
-                if !state.records.contains_key(&id) {
-                    return Err(ServiceError::NotFound);
+                TorrentCommand::Verify(id) => {
+                    let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+                    if record.snapshot.status == TorrentStatus::Checking {
+                        return Err(ServiceError::Conflict);
+                    }
+                    record.snapshot.status = TorrentStatus::Checking;
+                    record.snapshot.verified_bytes = 0;
+                    record.snapshot.verified_pieces.fill(false);
+                    (
+                        id,
+                        ServiceEventKind::StatusChanged(TorrentStatus::Checking),
+                        true,
+                    )
                 }
-                (id, ServiceEventKind::ReannounceRequested)
-            }
-            TorrentCommand::SetLimits {
-                id,
-                download_bytes_per_second,
-                upload_bytes_per_second,
-            } => {
-                let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
-                record.snapshot.download_limit = download_bytes_per_second;
-                record.snapshot.upload_limit = upload_bytes_per_second;
-                (id, ServiceEventKind::LimitsChanged)
-            }
-            TorrentCommand::SetFilePriorities { id, updates } => {
-                let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
-                if updates.is_empty() || updates.len() > record.snapshot.file_priorities.len() {
-                    return Err(ServiceError::InvalidInput);
+                TorrentCommand::Reannounce(id) => {
+                    if !state.records.contains_key(&id) {
+                        return Err(ServiceError::NotFound);
+                    }
+                    (id, ServiceEventKind::ReannounceRequested, false)
                 }
-                let mut seen = std::collections::BTreeSet::new();
-                for (index, _) in &updates {
-                    if *index as usize >= record.snapshot.file_priorities.len()
-                        || !seen.insert(*index)
-                    {
+                TorrentCommand::SetLimits {
+                    id,
+                    download_bytes_per_second,
+                    upload_bytes_per_second,
+                } => {
+                    let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+                    record.snapshot.download_limit = download_bytes_per_second;
+                    record.snapshot.upload_limit = upload_bytes_per_second;
+                    (id, ServiceEventKind::LimitsChanged, true)
+                }
+                TorrentCommand::SetFilePriorities { id, updates } => {
+                    let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+                    if updates.is_empty() || updates.len() > record.snapshot.file_priorities.len() {
                         return Err(ServiceError::InvalidInput);
                     }
+                    let mut seen = std::collections::BTreeSet::new();
+                    for (index, _) in &updates {
+                        if *index as usize >= record.snapshot.file_priorities.len()
+                            || !seen.insert(*index)
+                        {
+                            return Err(ServiceError::InvalidInput);
+                        }
+                    }
+                    for (index, priority) in updates {
+                        record.snapshot.file_priorities[index as usize] = priority;
+                    }
+                    (id, ServiceEventKind::PrioritiesChanged, true)
                 }
-                for (index, priority) in updates {
-                    record.snapshot.file_priorities[index as usize] = priority;
-                }
-                (id, ServiceEventKind::PrioritiesChanged)
-            }
+                TorrentCommand::Remove { .. } => unreachable!("remove is routed separately"),
+            };
+            let write = persist.then(|| CatalogWrite {
+                id,
+                previous,
+                revision: state.touch(id),
+            });
+            (id, kind, write)
         };
-        if !matches!(
-            kind,
-            ServiceEventKind::TorrentRemoved | ServiceEventKind::ReannounceRequested
-        ) {
-            let record = state.records.get(&id).ok_or(ServiceError::NotFound)?;
-            if atomic_json(&record_path(&self.directory, id), record).is_err() {
-                if let Some(previous) = previous {
-                    state.records.insert(id, previous);
-                }
-                return Err(ServiceError::Storage);
-            }
+        // Phase two: the durable write, with no catalog lock held.
+        if let Some(write) = &write {
+            self.commit_catalog_write(write)?;
         }
+        // Phase three: the event, emitted only for a persisted transition.
+        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
         emit(&mut state, id, kind)
     }
     fn find_by_hash(&self, hash: InfoHashV1) -> Result<Option<TorrentId>, ServiceError> {
@@ -888,6 +1050,20 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), StorageError> 
         return Err(StorageError::Resume);
     }
     atomic_write(path, &bytes)
+}
+
+/// Read one torrent's durable metainfo file with the encoded-size bound applied.
+///
+/// Symlinks, non-files, and oversized records fail closed, and the bound is
+/// re-checked after the read so a file grown past the limit during the read is
+/// still rejected.
+fn read_metainfo_file(path: &Path) -> Result<Vec<u8>, ServiceError> {
+    let max = metainfo::MetaLimits::default().encoded;
+    let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::Storage)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max as u64 {
+        return Err(ServiceError::Storage);
+    }
+    read_bounded_file(path, max).map_err(|_| ServiceError::Storage)
 }
 
 fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StorageError> {

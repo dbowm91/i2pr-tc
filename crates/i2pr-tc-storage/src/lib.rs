@@ -16,10 +16,13 @@ use std::{
 };
 use thiserror::Error;
 
+pub mod executor;
+pub use executor::{BlockingStoragePool, StorageExecutor};
+
 pub mod service;
 pub use service::PersistentTorrentService;
 pub mod runtime;
-pub use runtime::TorrentRuntime;
+pub use runtime::{PieceCompletion, TorrentRuntime};
 
 const MAX_RESUME_PIECES: usize = 4_000_000;
 const MAX_RESUME_BYTES: usize = 8 * 1024 * 1024;
@@ -42,6 +45,10 @@ pub enum StorageError {
     PieceHash,
     #[error("storage I/O serialization lock is poisoned")]
     Concurrency,
+    #[error("bounded storage configuration or job was rejected")]
+    InvalidInput,
+    #[error("blocking storage executor queue is full")]
+    Backpressure,
     #[error("storage operation was cancelled")]
     Cancelled,
 }

@@ -352,10 +352,70 @@ pub(crate) async fn race_cancel<F: Future>(
     }
 }
 
+/// Announce identity policy.
+///
+/// The default omits `User-Agent` entirely. Omission is qualified rather than
+/// merely preferred: qBittorrent's Anonymous Mode resets the header to an empty
+/// string and keeps announcing successfully against the same trackers, and the
+/// I2P BitTorrent specification documents announce parameters without ever
+/// mandating the header. A deployed client therefore needs it not at all, so
+/// the absence of the header buys the removal of a client fingerprint for free.
+///
+/// [`TrackerIdentity::Fixed`] exists only as an operator escape hatch for a
+/// private tracker that rejects headerless announces. It accepts one stable,
+/// non-versioned value and rejects anything version-shaped, so the fingerprint
+/// this corrective removed cannot be reintroduced by configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrackerIdentity {
+    /// Send no `User-Agent` header.
+    #[default]
+    Omit,
+    /// Send one fixed, non-versioned compatibility value.
+    Fixed(&'static str),
+}
+
+/// Longest accepted fixed `User-Agent` value.
+const MAX_FIXED_USER_AGENT_BYTES: usize = 128;
+
+/// Reject a fixed identity that would reintroduce a version fingerprint.
+fn validate_fixed_user_agent(value: &str) -> Result<(), TrackerError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_FIXED_USER_AGENT_BYTES {
+        return Err(TrackerError::Protocol);
+    }
+    if bytes.iter().any(|byte| !(0x20..=0x7e).contains(byte)) {
+        return Err(TrackerError::Protocol);
+    }
+    // A version fingerprint is any digit run followed by a dotted digit run,
+    // such as the `0.1` this corrective removed.
+    let mut digits = 0usize;
+    for byte in bytes {
+        if byte.is_ascii_digit() {
+            digits += 1;
+        } else if byte == &b'.' && digits > 0 {
+            return Err(TrackerError::Protocol);
+        } else {
+            digits = 0;
+        }
+    }
+    Ok(())
+}
+
 pub fn build_request(
     endpoint: &TrackerEndpoint,
     announce: &AnnounceRequest,
 ) -> Result<Vec<u8>, TrackerError> {
+    build_request_with_identity(endpoint, announce, TrackerIdentity::default())
+}
+
+pub fn build_request_with_identity(
+    endpoint: &TrackerEndpoint,
+    announce: &AnnounceRequest,
+    identity: TrackerIdentity,
+) -> Result<Vec<u8>, TrackerError> {
+    if let TrackerIdentity::Fixed(value) = identity {
+        validate_fixed_user_agent(value)?;
+    }
     identity::validate_i2p_hostname(&endpoint.host).map_err(|_| TrackerError::Protocol)?;
     if !endpoint.path_and_query.starts_with('/')
         || endpoint.path_and_query.contains(['\r', '\n', '#'])
@@ -381,9 +441,13 @@ pub fn build_request(
     } else {
         format!("{}:{}", endpoint.host, endpoint.port)
     };
-    let request = format!(
-        "GET {target} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\nUser-Agent: i2pr-tc/0.1\r\n\r\n"
-    );
+    let mut request = format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\n");
+    if let TrackerIdentity::Fixed(value) = identity {
+        request.push_str("User-Agent: ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("Connection: close\r\n\r\n");
     if request.len() > MAX_REQUEST_BYTES {
         return Err(TrackerError::Limit);
     }
@@ -731,5 +795,100 @@ mod tests {
         server_task.await.unwrap();
         assert_eq!(result.peers[0].hash.0, [4; 32]);
         assert_eq!(&*session.looked_up.lock().unwrap(), &["tracker.i2p"]);
+    }
+
+    fn golden_announce() -> AnnounceRequest {
+        AnnounceRequest {
+            info_hash: InfoHashV1([0xab; 20]),
+            peer_id: [
+                0x01, 0x02, 0x20, 0x0d, 0x0a, 0x2d, 0x0a, 0x2d, 0x41, 0x42, 0x43, 0x0a, 0x2d, 0x80,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+            uploaded: 10,
+            downloaded: 20,
+            left: 30,
+            numwant: 50,
+            event: Some(AnnounceEvent::Started),
+        }
+    }
+
+    #[test]
+    fn golden_announce_request_bytes_omit_any_version_fingerprint() {
+        let endpoint =
+            TrackerEndpoint::parse("http://tracker.i2p/announce?passkey=secret").unwrap();
+        let request = build_request(&endpoint, &golden_announce()).unwrap();
+        let mut expected = String::from("GET /announce?passkey=secret&info_hash=");
+        for byte in [0xabu8; 20] {
+            expected.push_str(&format!("%{byte:02X}"));
+        }
+        expected.push_str("&peer_id=%01%02%20%0D%0A%2D%0A%2D%41%42%43%0A%2D%80%00%00%00%00%00%00");
+        expected.push_str(
+            "&port=0&uploaded=10&downloaded=20&left=30&compact=1&numwant=50&event=started",
+        );
+        expected
+            .push_str(" HTTP/1.1\r\nHost: tracker.i2p\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+        assert_eq!(String::from_utf8(request).unwrap(), expected);
+    }
+
+    #[test]
+    fn announce_request_never_carries_a_versioned_user_agent() {
+        for value in [
+            "http://tracker.i2p/announce",
+            "http://tracker.i2p:6969/announce",
+        ] {
+            let endpoint = TrackerEndpoint::parse(value).unwrap();
+            let request = String::from_utf8(build_request(&endpoint, &golden_announce()).unwrap())
+                .unwrap()
+                .to_lowercase();
+            assert!(
+                !request.contains("user-agent"),
+                "{value} leaked a user agent"
+            );
+            assert!(
+                !request.contains("i2pr-tc"),
+                "{value} leaked the product name"
+            );
+            assert!(!request.contains("%2f0.%31"), "{value} leaked a version");
+        }
+    }
+
+    #[test]
+    fn non_default_port_is_announced_in_the_host_header() {
+        let endpoint = TrackerEndpoint::parse("http://tracker.i2p:6969/announce").unwrap();
+        let request =
+            String::from_utf8(build_request(&endpoint, &golden_announce()).unwrap()).unwrap();
+        assert!(request.contains("\r\nHost: tracker.i2p:6969\r\n"));
+    }
+
+    #[test]
+    fn fixed_tracker_identity_accepts_only_a_stable_non_versioned_value() {
+        let endpoint = TrackerEndpoint::parse("http://tracker.i2p/announce").unwrap();
+        let request = String::from_utf8(
+            build_request_with_identity(
+                &endpoint,
+                &golden_announce(),
+                TrackerIdentity::Fixed("bitTorrent"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(request.contains("\r\nUser-Agent: bitTorrent\r\n"));
+        for value in [
+            "i2pr-tc/0.1", // boundary-guard:allow
+            "client 1.0",
+            "qBittorrent 4.6.0",
+            "",
+            "bad\r\nX: 1",
+        ] {
+            assert!(
+                build_request_with_identity(
+                    &endpoint,
+                    &golden_announce(),
+                    TrackerIdentity::Fixed(value)
+                )
+                .is_err(),
+                "accepted versioned or hostile identity {value:?}"
+            );
+        }
     }
 }
