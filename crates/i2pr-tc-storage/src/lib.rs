@@ -348,6 +348,9 @@ impl Storage {
         hashes: &[[u8; 20]],
         cancellation: &Cancellation,
     ) -> Result<Vec<bool>, StorageError> {
+        if cancellation.is_cancelled() {
+            return Err(StorageError::Cancelled);
+        }
         let _permit = self.disk.lock().map_err(|_| StorageError::Concurrency)?;
         if piece_length == 0 || piece_length > MAX_PIECE_LENGTH {
             return Err(StorageError::Layout);

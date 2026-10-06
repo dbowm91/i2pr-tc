@@ -1,6 +1,6 @@
 //! Durable torrent catalog. It owns intent and metadata records, while piece
 //! payload files remain separately rooted by `Storage`.
-use crate::StorageError;
+use crate::{Cancellation, ResumeState, Storage, StorageError};
 use i2pr_tc_core::{
     magnet,
     metainfo::{self, InfoHashV1},
@@ -11,6 +11,7 @@ use i2pr_tc_core::{
     },
 };
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
@@ -129,14 +130,36 @@ impl PersistentTorrentService {
                     }
                 }
             }
-            record.snapshot.verified_bytes = 0;
-            record.snapshot.status = if record.snapshot.desired_running {
-                TorrentStatus::Starting
-            } else {
-                match record.snapshot.status {
-                    TorrentStatus::Completed => TorrentStatus::Checking,
-                    _ => TorrentStatus::Stopped,
+            match &record.source {
+                Source::Metainfo => {
+                    let meta_path = metainfo_path(&directory, id);
+                    let parsed = metainfo::parse(&fs::read(meta_path)?, Default::default())
+                        .map_err(|_| StorageError::Resume)?;
+                    if (record.snapshot.verified_pieces.len() != parsed.piece_hashes.len()
+                        && !record.snapshot.verified_pieces.is_empty())
+                        || record.snapshot.file_priorities.len() != parsed.files.len()
+                    {
+                        return Err(StorageError::Resume);
+                    }
+                    if record.snapshot.verified_pieces.is_empty() {
+                        record.snapshot.verified_pieces = vec![false; parsed.piece_hashes.len()];
+                    }
+                    record.snapshot.verified_pieces.fill(false);
                 }
+                Source::Magnet(_) => {
+                    if !record.snapshot.verified_pieces.is_empty()
+                        || !record.snapshot.file_priorities.is_empty()
+                    {
+                        return Err(StorageError::Resume);
+                    }
+                }
+            }
+            record.snapshot.verified_bytes = 0;
+            record.snapshot.status = match (record.snapshot.status, record.snapshot.desired_running)
+            {
+                (TorrentStatus::Checking | TorrentStatus::Completed, _) => TorrentStatus::Checking,
+                (_, true) => TorrentStatus::Starting,
+                _ => TorrentStatus::Stopped,
             };
             records.insert(id, record);
         }
@@ -150,15 +173,44 @@ impl PersistentTorrentService {
         })
     }
 
-    fn insert(&self, record: Record, metainfo: Option<&[u8]>) -> Result<TorrentId, ServiceError> {
+    fn insert(
+        &self,
+        mut record: Record,
+        metainfo: Option<&[u8]>,
+    ) -> Result<TorrentId, ServiceError> {
         let id = record.snapshot.id;
         let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
         if let Some(existing) = state.records.get(&id) {
-            return if existing.snapshot.info_hash == record.snapshot.info_hash {
-                Ok(id)
-            } else {
-                Err(ServiceError::Conflict)
-            };
+            if existing.snapshot.info_hash != record.snapshot.info_hash {
+                return Err(ServiceError::Conflict);
+            }
+            if metainfo.is_none() || matches!(&existing.source, Source::Metainfo) {
+                return Ok(id);
+            }
+            record.snapshot.status = existing.snapshot.status;
+            record.snapshot.desired_running = existing.snapshot.desired_running;
+            record.snapshot.downloaded_bytes = existing.snapshot.downloaded_bytes;
+            record.snapshot.uploaded_bytes = existing.snapshot.uploaded_bytes;
+            record.snapshot.download_limit = existing.snapshot.download_limit;
+            record.snapshot.upload_limit = existing.snapshot.upload_limit;
+            for (new, old) in record
+                .snapshot
+                .file_priorities
+                .iter_mut()
+                .zip(&existing.snapshot.file_priorities)
+            {
+                *new = *old;
+            }
+            if let Some(bytes) = metainfo {
+                atomic_write(&metainfo_path(&self.directory, id), bytes)
+                    .map_err(|_| ServiceError::Storage)?;
+            }
+            if atomic_json(&record_path(&self.directory, id), &record).is_err() {
+                return Err(ServiceError::Storage);
+            }
+            state.records.insert(id, record);
+            emit(&mut state, id, ServiceEventKind::MetadataAvailable)?;
+            return Ok(id);
         }
         if state.records.len() >= MAX_CATALOG_RECORDS {
             return Err(ServiceError::InvalidInput);
@@ -196,6 +248,7 @@ impl TorrentService for PersistentTorrentService {
                 download_limit: None,
                 upload_limit: None,
                 file_priorities: vec![FilePriority::Normal; meta.files.len()],
+                verified_pieces: vec![false; meta.piece_hashes.len()],
             },
             source: Source::Metainfo,
         };
@@ -224,10 +277,42 @@ impl TorrentService for PersistentTorrentService {
                 download_limit: None,
                 upload_limit: None,
                 file_priorities: Vec::new(),
+                verified_pieces: Vec::new(),
             },
             source: Source::Magnet(uri.to_owned()),
         };
         self.insert(record, None)
+    }
+
+    fn get_metainfo(&self, id: TorrentId) -> Result<Option<metainfo::TorrentMeta>, ServiceError> {
+        let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+        let record = state.records.get(&id).ok_or(ServiceError::NotFound)?;
+        if !matches!(&record.source, Source::Metainfo) {
+            return Ok(None);
+        }
+        let path = metainfo_path(&self.directory, id);
+        let metadata = fs::symlink_metadata(&path).map_err(|_| ServiceError::Storage)?;
+        let max = metainfo::MetaLimits::default().encoded as u64;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max {
+            return Err(ServiceError::Storage);
+        }
+        let mut bytes = Vec::new();
+        File::open(path)
+            .map_err(|_| ServiceError::Storage)?
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ServiceError::Storage)?;
+        if bytes.len() as u64 > max {
+            return Err(ServiceError::Storage);
+        }
+        let meta =
+            metainfo::parse(&bytes, Default::default()).map_err(|_| ServiceError::Storage)?;
+        if meta.info_hash.0 != record.snapshot.info_hash
+            || meta.total_length != record.snapshot.total_bytes
+        {
+            return Err(ServiceError::Storage);
+        }
+        Ok(Some(meta))
     }
 
     fn list(&self) -> Result<Vec<TorrentSnapshot>, ServiceError> {
@@ -285,6 +370,8 @@ impl TorrentService for PersistentTorrentService {
                     return Err(ServiceError::Conflict);
                 }
                 record.snapshot.status = TorrentStatus::Checking;
+                record.snapshot.verified_bytes = 0;
+                record.snapshot.verified_pieces.fill(false);
                 (id, ServiceEventKind::StatusChanged(TorrentStatus::Checking))
             }
             TorrentCommand::Remove { id, delete_data } => {
@@ -411,7 +498,83 @@ impl TorrentService for PersistentTorrentService {
             .find(|r| r.snapshot.info_hash == hash.0)
             .map(|r| r.snapshot.id))
     }
-    fn finish_verification(&self, id: TorrentId, verified_bytes: u64) -> Result<(), ServiceError> {
+    fn store_verified_piece(
+        &self,
+        id: TorrentId,
+        piece: u32,
+        bytes: &[u8],
+    ) -> Result<(), ServiceError> {
+        let meta = self.get_metainfo(id)?.ok_or(ServiceError::Unsupported)?;
+        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+        let previous = state
+            .records
+            .get(&id)
+            .cloned()
+            .ok_or(ServiceError::NotFound)?;
+        let index = piece as usize;
+        let expected = *meta
+            .piece_hashes
+            .get(index)
+            .ok_or(ServiceError::InvalidInput)?;
+        let offset = (index as u64)
+            .checked_mul(meta.piece_length as u64)
+            .ok_or(ServiceError::InvalidInput)?;
+        let expected_len = (meta.total_length - offset).min(meta.piece_length as u64) as usize;
+        if bytes.len() != expected_len || <[u8; 20]>::from(Sha1::digest(bytes)) != expected {
+            return Err(ServiceError::InvalidInput);
+        }
+        let payload = Storage::open(self.payload_root(id)).map_err(|_| ServiceError::Storage)?;
+        payload
+            .prepare(&meta.files)
+            .and_then(|_| {
+                payload.write_verified_piece(&meta.files, meta.piece_length, piece, bytes, expected)
+            })
+            .map_err(|error| match error {
+                StorageError::PieceHash | StorageError::Layout => ServiceError::InvalidInput,
+                _ => ServiceError::Storage,
+            })?;
+        let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+        if !matches!(
+            record.snapshot.status,
+            TorrentStatus::Checking | TorrentStatus::Running | TorrentStatus::Starting
+        ) {
+            return Err(ServiceError::Conflict);
+        }
+        if record.snapshot.verified_pieces[index] {
+            return Ok(());
+        }
+        record.snapshot.verified_pieces[index] = true;
+        record.snapshot.verified_bytes = record
+            .snapshot
+            .verified_bytes
+            .checked_add(expected_len as u64)
+            .ok_or(ServiceError::Storage)?;
+        record.snapshot.status = if record
+            .snapshot
+            .verified_pieces
+            .iter()
+            .all(|verified| *verified)
+        {
+            TorrentStatus::Completed
+        } else {
+            record.snapshot.status
+        };
+        let status = record.snapshot.status;
+        if atomic_json(&record_path(&self.directory, id), record).is_err() {
+            state.records.insert(id, previous);
+            return Err(ServiceError::Storage);
+        }
+        emit(
+            &mut state,
+            id,
+            if status == TorrentStatus::Completed {
+                ServiceEventKind::StatusChanged(status)
+            } else {
+                ServiceEventKind::ProgressChanged
+            },
+        )
+    }
+    fn cancel_verification(&self, id: TorrentId) -> Result<(), ServiceError> {
         let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
         let previous = state
             .records
@@ -419,15 +582,10 @@ impl TorrentService for PersistentTorrentService {
             .cloned()
             .ok_or(ServiceError::NotFound)?;
         let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
-        if record.snapshot.status != TorrentStatus::Checking
-            || verified_bytes > record.snapshot.total_bytes
-        {
+        if record.snapshot.status != TorrentStatus::Checking {
             return Err(ServiceError::Conflict);
         }
-        record.snapshot.verified_bytes = verified_bytes;
-        record.snapshot.status = if verified_bytes == record.snapshot.total_bytes {
-            TorrentStatus::Completed
-        } else if record.snapshot.desired_running {
+        record.snapshot.status = if record.snapshot.desired_running {
             TorrentStatus::Running
         } else {
             TorrentStatus::Stopped
@@ -491,6 +649,96 @@ impl PersistentTorrentService {
     fn payload_root(&self, id: TorrentId) -> PathBuf {
         self.root.join("downloads").join(format!("{:032x}", id.0))
     }
+
+    /// Verify every stored piece against metainfo before reporting progress.
+    /// Resume bits are written only from this storage-derived result.
+    pub fn verify_and_recover(
+        &self,
+        id: TorrentId,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<bool>, ServiceError> {
+        let meta = self.get_metainfo(id)?.ok_or(ServiceError::Unsupported)?;
+        if self.get(id)?.status != TorrentStatus::Checking {
+            <Self as TorrentService>::command(self, TorrentCommand::Verify(id))?;
+        }
+        let payload = Storage::open(self.payload_root(id)).map_err(|_| ServiceError::Storage)?;
+        let verified = match payload.recheck_cancellable(
+            &meta.files,
+            meta.piece_length,
+            &meta.piece_hashes,
+            cancellation,
+        ) {
+            Ok(bitmap) => bitmap,
+            Err(StorageError::Cancelled) => {
+                let _ = <Self as TorrentService>::cancel_verification(self, id);
+                return Err(ServiceError::Cancelled);
+            }
+            Err(_) => {
+                let _ = <Self as TorrentService>::cancel_verification(self, id);
+                return Err(ServiceError::Storage);
+            }
+        };
+        for (index, good) in verified.iter().enumerate() {
+            if *good {
+                let offset = (index as u64)
+                    .checked_mul(meta.piece_length as u64)
+                    .ok_or(ServiceError::Storage)?;
+                let length = (meta.total_length - offset).min(meta.piece_length as u64);
+                let bytes = payload
+                    .read_piece(
+                        &meta.files,
+                        meta.piece_length,
+                        index as u32,
+                        length as usize,
+                    )
+                    .map_err(|_| ServiceError::Storage)?;
+                <Self as TorrentService>::store_verified_piece(self, id, index as u32, &bytes)?;
+            }
+        }
+        self.finish_recheck(id)?;
+        let snapshot = self.get(id)?;
+        let resume = ResumeState {
+            version: 1,
+            info_hash: meta.info_hash.0,
+            storage_schema: 1,
+            desired_running: snapshot.desired_running,
+            verified: snapshot.verified_pieces.clone(),
+            downloaded: snapshot.downloaded_bytes,
+            uploaded: snapshot.uploaded_bytes,
+        };
+        Storage::open(&self.root)
+            .and_then(|storage| storage.save_resume(&resume))
+            .map_err(|_| {
+                let _ = <Self as TorrentService>::cancel_verification(self, id);
+                ServiceError::Storage
+            })?;
+        Ok(verified)
+    }
+
+    fn finish_recheck(&self, id: TorrentId) -> Result<(), ServiceError> {
+        let mut state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+        let previous = state
+            .records
+            .get(&id)
+            .cloned()
+            .ok_or(ServiceError::NotFound)?;
+        let record = state.records.get_mut(&id).ok_or(ServiceError::NotFound)?;
+        if record.snapshot.status == TorrentStatus::Checking {
+            record.snapshot.status = if record.snapshot.verified_pieces.iter().all(|piece| *piece) {
+                TorrentStatus::Completed
+            } else if record.snapshot.desired_running {
+                TorrentStatus::Running
+            } else {
+                TorrentStatus::Stopped
+            };
+        }
+        let status = record.snapshot.status;
+        if atomic_json(&record_path(&self.directory, id), record).is_err() {
+            state.records.insert(id, previous);
+            return Err(ServiceError::Storage);
+        }
+        emit(&mut state, id, ServiceEventKind::StatusChanged(status))
+    }
 }
 
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), StorageError> {
@@ -528,6 +776,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha1::{Digest, Sha1};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn root() -> PathBuf {
@@ -543,7 +792,7 @@ mod tests {
 
     fn meta() -> Vec<u8> {
         let mut bytes = b"d4:infod6:lengthi1e4:name1:x12:piece lengthi1e6:pieces20:".to_vec();
-        bytes.extend([0u8; 20]);
+        bytes.extend(Sha1::digest(b"x"));
         bytes.extend_from_slice(b"ee");
         bytes
     }
@@ -610,21 +859,24 @@ mod tests {
     }
 
     #[test]
-    fn verification_completion_is_durable_and_bounded_by_torrent_length() {
+    fn only_hash_verified_piece_progress_is_durable() {
         let root = root();
         let service = PersistentTorrentService::open(&root).unwrap();
         let id = service.add_metainfo(&meta()).unwrap();
         service.command(TorrentCommand::Verify(id)).unwrap();
         assert_eq!(
-            service.finish_verification(id, 2),
-            Err(ServiceError::Conflict)
+            service.store_verified_piece(id, 0, b"bad"),
+            Err(ServiceError::InvalidInput)
         );
-        service.finish_verification(id, 1).unwrap();
+        assert_eq!(service.get(id).unwrap().verified_bytes, 0);
+        service.store_verified_piece(id, 0, b"x").unwrap();
         assert_eq!(service.get(id).unwrap().status, TorrentStatus::Completed);
+        assert_eq!(fs::read(service.payload_root(id).join("x")).unwrap(), b"x");
         drop(service);
         let service = PersistentTorrentService::open(&root).unwrap();
         assert_eq!(service.get(id).unwrap().status, TorrentStatus::Checking);
         assert_eq!(service.get(id).unwrap().verified_bytes, 0);
+        assert_eq!(service.get(id).unwrap().verified_pieces, vec![false]);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -647,6 +899,92 @@ mod tests {
             .unwrap();
         assert!(!payload_root.join("x").exists());
         assert_eq!(service.get(id), Err(ServiceError::NotFound));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolved_magnet_metadata_is_durable_and_keeps_the_id() {
+        let root = root();
+        let service = PersistentTorrentService::open(&root).unwrap();
+        let bytes = meta();
+        let parsed = metainfo::parse(&bytes, Default::default()).unwrap();
+        let hash = parsed
+            .info_hash
+            .0
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let id = service
+            .add_magnet(&format!("magnet:?xt=urn:btih:{hash}&dn=pending"))
+            .unwrap();
+        assert!(service.get_metainfo(id).unwrap().is_none());
+        assert_eq!(service.add_metainfo(&bytes).unwrap(), id);
+        assert_eq!(service.get(id).unwrap().total_bytes, 1);
+        drop(service);
+
+        let service = PersistentTorrentService::open(&root).unwrap();
+        assert_eq!(
+            service.get_metainfo(id).unwrap().unwrap().info_hash,
+            parsed.info_hash
+        );
+        assert_eq!(
+            service.get(id).unwrap().file_priorities,
+            [FilePriority::Normal]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_rechecks_pieces_before_restoring_verified_progress() {
+        let root = root();
+        let service = PersistentTorrentService::open(&root).unwrap();
+        let bytes = meta();
+        let parsed = metainfo::parse(&bytes, Default::default()).unwrap();
+        let id = service.add_metainfo(&bytes).unwrap();
+        let payload_root = service.payload_root(id);
+        let payload = crate::Storage::open(&payload_root).unwrap();
+        payload.prepare(&parsed.files).unwrap();
+        payload
+            .write_verified_piece(
+                &parsed.files,
+                parsed.piece_length,
+                0,
+                b"x",
+                parsed.piece_hashes[0],
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .verify_and_recover(id, &Cancellation::default())
+                .unwrap(),
+            vec![true]
+        );
+        assert_eq!(service.get(id).unwrap().verified_bytes, 1);
+        drop(service);
+
+        fs::write(payload_root.join("x"), b"y").unwrap();
+        let service = PersistentTorrentService::open(&root).unwrap();
+        assert_eq!(service.get(id).unwrap().status, TorrentStatus::Checking);
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        assert_eq!(
+            service.verify_and_recover(id, &cancelled),
+            Err(ServiceError::Cancelled)
+        );
+        assert_eq!(service.get(id).unwrap().status, TorrentStatus::Stopped);
+        assert_eq!(
+            service
+                .verify_and_recover(id, &Cancellation::default())
+                .unwrap(),
+            vec![false]
+        );
+        assert_eq!(service.get(id).unwrap().verified_bytes, 0);
+        let resume = crate::Storage::open(&root)
+            .unwrap()
+            .load_resume(parsed.info_hash, 1, 10, 4096)
+            .unwrap();
+        assert_eq!(resume.verified, vec![false]);
+        drop(payload);
         let _ = fs::remove_dir_all(root);
     }
 }

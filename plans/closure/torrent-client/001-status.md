@@ -8,7 +8,10 @@ This record captures the implementation checkpoint on `codex/planning-foundation
 
 - `36ef50a` — initial Rust workspace, core/storage primitives, parser and storage fixtures, fuzz targets, dependency guard, architecture snapshot, and registry activation.
 - `66ef59d` — recorded the current i2pr upstream contract state and confirmed M004/M005 remain blocked.
-- This checkpoint report is recorded in its own follow-up commit.
+- `d5b4539` — recorded the initial implementation checkpoint and closure gaps.
+- `edfc7d6` — corrected peer availability replacement and multi-block in-flight ownership.
+- `a1ad537` — added bounded incremental peer framing and hash-checked storage writes.
+- `15c1002` — added durable service state, bounded events/priorities, resume-root safety, cancellation, metadata bounds, boundary guards, and fuzz corpora.
 
 ## Landed scope
 
@@ -20,7 +23,7 @@ This record captures the implementation checkpoint on `codex/planning-foundation
 | Peer wire/extensions | Handshake/frame decoding, I2P 32-byte PEX entries, bounded `ut_metadata` message parsing and extension map | Partial codec; no complete peer state machine |
 | Piece selection | Deterministic availability-aware scheduling primitive and bounded in-flight ownership | Primitive only; no transfer engine |
 | Storage | Rooted file mapping, cross-file reads, hash-checked exact-size piece writes, piece recheck, serialized/cancellable disk access, per-torrent deletion, and rooted versioned atomic resume | Partial; no race-free platform-specific descriptor-relative API or automatic service/recheck composition |
-| TorrentService | Native typed trait, bounded cursor-based event ring, priorities/limits, deterministic in-memory adapter, and durable `PersistentTorrentService` catalog with restart intent restoration | Catalog/state owner implemented; scheduler/transfer engine composition remains |
+| TorrentService | Native typed trait, bounded cursor-based event ring, priorities/limits, deterministic in-memory adapter, durable `PersistentTorrentService` catalog, magnet metadata promotion, and restart intent restoration | Catalog/state owner implemented; a full PieceMap/storage/service torrent runtime remains |
 | Static/dependency boundary | `scripts/check-foundation-boundaries.py --self-test` checks manifests and source references; self-test injects forbidden dependency/socket controls | Implemented locally; not wired into CI yet |
 | Fuzzing | Five cargo-fuzz targets with retained seed and generated corpora | 100-run smoke passed for bencode, metainfo, peer_wire, extension, and resume; sustained fuzzing remains |
 
@@ -30,7 +33,7 @@ Passed:
 
 - `rtk proxy cargo fmt --all -- --check`
 - `rtk proxy cargo fmt --manifest-path fuzz/Cargo.toml -- --check`
-- `rtk proxy cargo test --workspace --all-targets --locked` — 31 tests passed (20 core, 11 storage)
+- `rtk proxy cargo test --workspace --all-targets --locked` — 34 tests passed (21 core, 13 storage)
 - `rtk proxy cargo check --workspace --all-targets --locked`
 - `rtk proxy cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - `RUSTDOCFLAGS='-D warnings' rtk proxy cargo doc --workspace --no-deps --locked`
@@ -47,15 +50,15 @@ Fuzz smoke:
 ## Unresolved acceptance work
 
 - Compose `PieceMap`, verified storage, service snapshots, and completion callbacks under one authoritative torrent runtime owner.
-- Make metainfo resolution for a magnet update its existing durable record and expose the resolved `TorrentMeta` through the service contract.
-- Connect resume bitmap loading to file/piece recheck automatically before service state reports verified progress.
+- Compose `PieceMap`, verified storage, service snapshots, and completion callbacks under one authoritative torrent runtime owner.
+- Run startup recheck automatically as part of production runtime initialization before it reports verified progress; current explicit recovery resets claims on open and only restores them after `verify_and_recover`.
 - Complete crash interruption, cancellation during active multi-file writes/recheck, stable-ID collision, corrupt/short/long file, and broad peer-wire fixture matrices.
 - Wire the dependency guard into CI and qualify platform-specific filesystem guarantees; ordinary path checks still have TOCTOU limits.
 - Run longer fuzz campaigns and retain their evidence.
 
 ## Security and compatibility evidence
 
-The implemented parser and storage checks reject duplicate/unsorted bencode keys, duplicate/colliding file paths, unsafe and cross-platform-reserved path components, mismatched piece counts, oversized values, malformed peer frames, non-32-byte PEX records, invalid magnet hash schemes, and stale resume identity. Wrong-hash writes fail before touching storage; resume verification claims reset on restart. No host networking or Transmission-specific type exists in core. This is bounded foundational evidence only; storage symlink checks use ordinary filesystem path operations and are not a race-free sandbox boundary.
+The implemented parser and storage checks reject duplicate/unsorted bencode keys, duplicate/colliding file paths, unsafe and cross-platform-reserved path components, mismatched piece counts, oversized values, malformed peer frames, non-32-byte PEX records, invalid magnet hash schemes, and stale resume identity. Wrong-hash writes fail before touching storage; durable service progress advances only after exact-length piece bytes pass the metainfo hash and storage write, and resume verification claims reset on restart. No host networking or Transmission-specific type exists in core. This is bounded foundational evidence only; storage symlink checks use ordinary filesystem path operations and are not a race-free sandbox boundary.
 
 ## Unblock audit
 
@@ -63,7 +66,7 @@ M002 remains blocked on full M001 closure. M003 remains blocked because the Torr
 
 The initial upstream check recorded below was superseded by a fresh 2026-10-06 inspection of `main` at `2f82c7998fc9f43c6f94843b58faa0b0fdc9c2e4` and the runtime branch at `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Plans 349 and 352–355 close corrected v1 policy and the private SAM/I2CP gateway. That removes the prior gateway-contract blocker, but upstream explicitly has no AppManager/package/process plan; process authentication, package lifecycle, and sandbox remain unimplemented. The upstream tree also contains no router-owned ReleaseTarget or artifact staging/export contract. M004 remains blocked on M002 and the missing app-runtime contract; M005 remains blocked on M002/M004 and update handoff interfaces.
 
-Since commit `d5b4539`, M001 scheduler work replaced additive peer availability with peer-keyed replacement/withdrawal and keeps a piece in-flight until all outstanding blocks complete. The bounded peer-wire decoder handles fragmented/coalesced frames and rejects oversized announced lengths before payload accumulation. Storage verifies exact-size piece bytes before writes; serialized disk access can be cancelled between files/pieces. Resume files stay under the authorized root, are byte-bounded while loading, and use unique atomic temporary files. Metainfo rejects duplicate and file/directory-colliding paths, retains bounded announce tiers, and rejects cross-platform reserved names. The service exposes bounded events, priorities and limits; its durable catalog restores desired-running torrents as `Starting`, returns completed torrents to `Checking`, and clears verified-byte claims. Payload removal is wired for metainfo-backed torrents. Workspace tests pass (31 total), Clippy with warnings denied, five fuzz targets compile and each passed 100 smoke runs, the mutation-tested foundation boundary guard passes, and `git diff --check` passes. Scheduler/storage/service composition and automatic resume recheck remain incomplete; M001 stays active.
+Since commit `d5b4539`, M001 scheduler work replaced additive peer availability with peer-keyed replacement/withdrawal and keeps a piece in-flight until all outstanding blocks complete. The bounded peer-wire decoder handles fragmented/coalesced frames and rejects oversized announced lengths before payload accumulation. Storage verifies exact-size piece bytes before writes; serialized disk access can be cancelled between files/pieces. Resume files stay under the authorized root, are byte-bounded while loading, and use unique atomic temporary files. Metainfo rejects duplicate and file/directory-colliding paths, retains bounded announce tiers, and rejects cross-platform reserved names. The service exposes bounded events, priorities and limits; its durable catalog restores desired-running torrents as `Starting`, returns completed torrents to `Checking`, and clears verified-piece claims. Magnet metadata promotion preserves the torrent ID and exposes resolved metainfo. Persistent service piece ingestion now writes hash-verified bytes before advancing durable progress, while recovery rechecks stored files and rebuilds the progress bitmap; a regression test verifies corrupt payload is discarded on recovery. Payload removal is wired for metainfo-backed torrents. Workspace tests pass (34 total), Clippy with warnings denied, five fuzz targets compile and each passed 100 smoke runs, the mutation-tested foundation boundary guard passes, and `git diff --check` passes. The single runtime owner integrating PieceMap, storage, resume, and service progress remains incomplete; M001 stays active.
 
 ## Closure recommendation
 
