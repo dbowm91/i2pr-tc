@@ -1,6 +1,6 @@
 # Torrent Client M004 — i2pr Managed-App Integration
 
-Status: blocked on upstream runtime interfaces and M002
+Status: blocked on M002 and missing upstream app-runtime interfaces
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M004--i2pr-managed-app-integration`
@@ -11,7 +11,7 @@ Hard dependency: M002 closed.
 
 Interface dependencies:
 
-- corrected/current i2pr managed-app contract after Plan 349;
+- managed app manager/process authentication, package lifecycle, and OS sandbox contract (the corrected protocol and router-side SAM/I2CP gateway are now closed upstream);
 - live app-scoped SAM gateway;
 - host-owned PublishedLocalService or equivalent for RPC;
 - private persistent app-data root semantics.

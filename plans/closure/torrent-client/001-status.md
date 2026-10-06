@@ -58,7 +58,9 @@ The implemented parser and storage checks reject duplicate/unsorted bencode keys
 
 M002 remains blocked on full M001 closure. M003 remains blocked because the TorrentService is only a contract prototype and M001 has not closed. No later handoff is promoted.
 
-The upstream `dbowm91/i2pr:codex/plan-345-native-app-runtime` head was inspected at `ea7b5ccef9bacbddf826f074cc59d891849a1424` on 2026-10-05. Plan 349 is still ready and not closed; the corrected managed-app interface is therefore not qualified. No router-owned ReleaseTarget or artifact staging/export contract was found. M004 and M005 remain blocked.
+The initial upstream check recorded below was superseded by a fresh 2026-10-06 inspection of `main` at `2f82c7998fc9f43c6f94843b58faa0b0fdc9c2e4` and the runtime branch at `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Plans 349 and 352–355 close corrected v1 policy and the private SAM/I2CP gateway. That removes the prior gateway-contract blocker, but upstream explicitly has no AppManager/package/process plan; process authentication, package lifecycle, and sandbox remain unimplemented. The upstream tree also contains no router-owned ReleaseTarget or artifact staging/export contract. M004 remains blocked on M002 and the missing app-runtime contract; M005 remains blocked on M002/M004 and update handoff interfaces.
+
+Since commit `d5b4539`, M001 scheduler work replaced additive peer availability with peer-keyed replacement/withdrawal and keeps a piece in-flight until all its outstanding blocks complete. Focused regression tests cover availability replacement/disconnect and concurrent blocks. This is implementation progress only; it does not satisfy M001 closure criteria.
 
 ## Closure recommendation
 
