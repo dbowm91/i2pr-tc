@@ -22,9 +22,9 @@
 //!   I2PR_TC_LIVE_NAME           a `.i2p` name to resolve
 //!   I2PR_TC_LIVE_DESTINATION    a base64 Destination to dial
 use i2pr_tc_i2p::{
+    I2pSession,
     identity::Destination,
     sam::{SamClient, SamConnectionFactory, SamIdentity, SamLimits, SamRawStream, SamTimeouts},
-    I2pSession,
 };
 use std::time::Duration;
 use tokio::net::TcpStream;

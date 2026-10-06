@@ -10,8 +10,8 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        mpsc::{sync_channel, SyncSender, TrySendError},
         Arc, Mutex, MutexGuard,
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
     task::{Context, Poll, Waker},
     thread,
@@ -67,17 +67,19 @@ impl BlockingStoragePool {
             let receiver = Arc::clone(&receiver);
             thread::Builder::new()
                 .name(format!("i2pr-tc-storage-{index}"))
-                .spawn(move || loop {
-                    let job = {
-                        let guard = match receiver.lock() {
-                            Ok(guard) => guard,
-                            Err(_) => return,
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let guard = match receiver.lock() {
+                                Ok(guard) => guard,
+                                Err(_) => return,
+                            };
+                            guard.recv()
                         };
-                        guard.recv()
-                    };
-                    match job {
-                        Ok(job) => job(),
-                        Err(_) => return,
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => return,
+                        }
                     }
                 })
                 .map_err(StorageError::Io)?;

@@ -19,7 +19,7 @@
 //! profile and is not required by the torrent transport.
 #![forbid(unsafe_code)]
 
-use crate::{identity, I2pSession, I2pStream, TransportError};
+use crate::{I2pSession, I2pStream, TransportError, identity};
 use async_trait::async_trait;
 use i2pr_tc_storage::Cancellation;
 #[cfg(test)]
@@ -1142,12 +1142,12 @@ impl<F: SamConnectionFactory> SamClient<F> {
                                 }
                             }
                             Some(other) => {
-                                return Err(TransportError::from(SamError::Router(other)))
+                                return Err(TransportError::from(SamError::Router(other)));
                             }
                             None => {
                                 return Err(TransportError::from(SamError::Protocol(
                                     "SAM reply is missing RESULT",
-                                )))
+                                )));
                             }
                         }
                     }
@@ -1200,7 +1200,7 @@ impl<F: SamConnectionFactory> I2pSession for SamClient<F> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 
     const SESSION_ID: &str = "torrent-session";
     /// Command octets the client must write.
@@ -1609,9 +1609,11 @@ mod tests {
         ));
         for bad in ["QUJD", "****", "YQ==YQ=="] {
             let block = format!("NAMING REPLY RESULT=OK DESTINATION={bad}\n");
-            assert!(parse_reply_block(block.as_bytes(), &limits)
-                .and_then(|reply| reply.destination("DESTINATION"))
-                .is_err());
+            assert!(
+                parse_reply_block(block.as_bytes(), &limits)
+                    .and_then(|reply| reply.destination("DESTINATION"))
+                    .is_err()
+            );
         }
         assert!(matches!(
             parse_reply_block(b"NAMING REPLY RESULT=OK\n".as_slice(), &limits)
@@ -1896,10 +1898,9 @@ mod tests {
             "I2P_ERROR",
             "NOT_IMPLEMENTED",
         ] {
-            let (client, transcripts) = client(vec![format!(
-                "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT={result}\n"
-            )
-            .into_bytes()]);
+            let (client, transcripts) = client(vec![
+                format!("{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT={result}\n").into_bytes(),
+            ]);
             let destination =
                 identity::Destination::from_bytes(vec![0x41; MIN_DESTINATION_BYTES]).unwrap();
             let outcome = client
@@ -1917,15 +1918,17 @@ mod tests {
     #[tokio::test]
     async fn sam_stream_accept_consumes_the_destination_line_then_raw_data() {
         let peer = vec![0x77; MIN_DESTINATION_BYTES];
-        let (client, transcripts) = client(vec![[
-            format!(
-                "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK DESTINATION={}\n",
-                encode_base64(&peer)
-            )
-            .into_bytes(),
-            vec![1, 2, 3, 4],
-        ]
-        .concat()]);
+        let (client, transcripts) = client(vec![
+            [
+                format!(
+                    "{HELLO_REPLY}{SESSION_REPLY}STREAM STATUS RESULT=OK DESTINATION={}\n",
+                    encode_base64(&peer)
+                )
+                .into_bytes(),
+                vec![1, 2, 3, 4],
+            ]
+            .concat(),
+        ]);
         let (destination, mut stream) = client
             .stream_accept(&Cancellation::default())
             .await
@@ -1979,10 +1982,9 @@ mod tests {
         let slow_identity = SamIdentity::new(None, SESSION_ID).unwrap();
         let slow = SamClient::new(
             {
-                let (factory, _sink) = ScriptedFactory::new(vec![format!(
-                    "{HELLO_REPLY}{SESSION_REPLY}"
-                )
-                .into_bytes()]);
+                let (factory, _sink) = ScriptedFactory::new(vec![
+                    format!("{HELLO_REPLY}{SESSION_REPLY}").into_bytes(),
+                ]);
                 factory
             },
             slow_identity,

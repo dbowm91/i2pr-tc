@@ -1,8 +1,8 @@
 //! Magnet metadata assembly with BEP 9 bounds and exact infohash verification.
 use i2pr_tc_core::{
-    extension::{parse_ut_metadata, MetadataLimits, UtMetadata},
-    metainfo::{self, MetaLimits},
     InfoHashV1,
+    extension::{MetadataLimits, UtMetadata, parse_ut_metadata},
+    metainfo::{self, MetaLimits},
 };
 use sha1::{Digest, Sha1};
 use std::collections::BTreeSet;

@@ -806,13 +806,15 @@ mod tests {
                     length: 4
                 }
         );
-        assert!(session
-            .on_message(Message::Request {
-                index: 1,
-                begin: 4,
-                length: 1
-            })
-            .is_err());
+        assert!(
+            session
+                .on_message(Message::Request {
+                    index: 1,
+                    begin: 4,
+                    length: 1
+                })
+                .is_err()
+        );
     }
 
     #[test]

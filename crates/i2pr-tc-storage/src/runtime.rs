@@ -12,8 +12,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
 };
 

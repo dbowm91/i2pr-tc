@@ -1,6 +1,6 @@
 //! One-request HTTP adapter over a caller-owned bidirectional stream.
 use crate::{
-    adapter::{encode_response, TransmissionAdapter},
+    adapter::{TransmissionAdapter, encode_response},
     wire::{self, WireMode},
 };
 use serde_json::json;
@@ -230,11 +230,11 @@ mod tests {
     use std::{
         path::PathBuf,
         sync::{
-            atomic::{AtomicU64, Ordering},
             Arc,
+            atomic::{AtomicU64, Ordering},
         },
     };
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     fn root() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -287,11 +287,16 @@ mod tests {
         let response = request(&endpoint, request_bytes).await;
         assert!(response.starts_with(b"HTTP/1.1 409 Conflict\r\n"));
         let session_header = b"X-Transmission-Session-Id: session-token-1234567890";
-        assert!(response
-            .windows(session_header.len())
-            .any(|window| window == session_header));
+        assert!(
+            response
+                .windows(session_header.len())
+                .any(|window| window == session_header)
+        );
 
-        let header = format!("POST /transmission/rpc HTTP/1.1\r\nX-Transmission-Session-Id: session-token-1234567890\r\nContent-Length: {}\r\n\r\n", body.len());
+        let header = format!(
+            "POST /transmission/rpc HTTP/1.1\r\nX-Transmission-Session-Id: session-token-1234567890\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
         let mut request_bytes = header.into_bytes();
         request_bytes.extend_from_slice(body);
         let response = request(&endpoint, request_bytes).await;

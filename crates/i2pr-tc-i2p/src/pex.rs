@@ -176,16 +176,18 @@ mod tests {
             DestinationHash([3; 32]),
             tokio::time::Instant::now() + std::time::Duration::from_secs(60),
         );
-        assert!(sources
-            .apply_pex(
-                &I2pPex {
-                    added: vec![[3; 32]],
-                    dropped: vec![],
-                },
-                DestinationHash([9; 32]),
-                4,
-            )
-            .unwrap()
-            .is_empty());
+        assert!(
+            sources
+                .apply_pex(
+                    &I2pPex {
+                        added: vec![[3; 32]],
+                        dropped: vec![],
+                    },
+                    DestinationHash([9; 32]),
+                    4,
+                )
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -3,20 +3,20 @@ use crate::{
     ids::{IdError, RpcIdStore},
     wire::{self, RpcRequest, WireMode},
 };
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use fs2::available_space;
 use i2pr_tc_core::service::{
     FilePriority, ServiceError, TorrentCommand, TorrentService, TorrentSnapshot, TorrentStatus,
 };
 use i2pr_tc_core::{magnet, metainfo};
 use i2pr_tc_storage::{Cancellation, TorrentRuntime};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 use thiserror::Error;
@@ -274,10 +274,12 @@ impl TransmissionAdapter {
             ),
             (
                 "download_limit",
-                json!(snapshot
-                    .download_limit
-                    .map(|value| value / 1000)
-                    .unwrap_or(0)),
+                json!(
+                    snapshot
+                        .download_limit
+                        .map(|value| value / 1000)
+                        .unwrap_or(0)
+                ),
             ),
             ("download_limited", json!(snapshot.download_limit.is_some())),
             (

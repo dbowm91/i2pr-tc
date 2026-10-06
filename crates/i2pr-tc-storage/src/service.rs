@@ -5,9 +5,9 @@ use i2pr_tc_core::{
     magnet,
     metainfo::{self, InfoHashV1},
     service::{
-        EventBatch, FilePriority, ServiceError, ServiceEvent, ServiceEventKind, TorrentCommand,
-        TorrentId, TorrentService, TorrentSnapshot, TorrentStatus, MAX_EVENT_BATCH,
-        MAX_SERVICE_EVENTS,
+        EventBatch, FilePriority, MAX_EVENT_BATCH, MAX_SERVICE_EVENTS, ServiceError, ServiceEvent,
+        ServiceEventKind, TorrentCommand, TorrentId, TorrentService, TorrentSnapshot,
+        TorrentStatus,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -18,8 +18,8 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -1179,11 +1179,13 @@ mod tests {
             .unwrap();
         assert_eq!(service.get(id), Err(ServiceError::NotFound));
         drop(service);
-        assert!(PersistentTorrentService::open(&root)
-            .unwrap()
-            .list()
-            .unwrap()
-            .is_empty());
+        assert!(
+            PersistentTorrentService::open(&root)
+                .unwrap()
+                .list()
+                .unwrap()
+                .is_empty()
+        );
         let _ = fs::remove_dir_all(root);
     }
 

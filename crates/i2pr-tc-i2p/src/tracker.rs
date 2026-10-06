@@ -1,9 +1,9 @@
 //! Bounded HTTP I2P tracker announces over an injected Destination stream.
 use crate::{
-    identity::{self, I2pPeer},
     I2pSession, TransportError,
+    identity::{self, I2pPeer},
 };
-use i2pr_tc_core::{bencode, service::TorrentService, InfoHashV1};
+use i2pr_tc_core::{InfoHashV1, bencode, service::TorrentService};
 use i2pr_tc_storage::{Cancellation, PersistentTorrentService};
 use std::{future::Future, time::Duration};
 use thiserror::Error;
@@ -644,10 +644,10 @@ fn to_u32(value: i64) -> Result<u32, TrackerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{identity::Destination, I2pStream};
+    use crate::{I2pStream, identity::Destination};
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     fn compact_response(peers: &[[u8; 32]]) -> Vec<u8> {
         let mut out = b"d8:intervali60e5:peers".to_vec();

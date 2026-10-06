@@ -1,6 +1,6 @@
 //! Filesystem and resume primitives rooted in an explicitly authorized directory.
 #![forbid(unsafe_code)]
-use i2pr_tc_core::{metainfo::TorrentFile, InfoHashV1};
+use i2pr_tc_core::{InfoHashV1, metainfo::TorrentFile};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
@@ -9,9 +9,9 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
+        Arc, Mutex,
         atomic::AtomicBool,
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
     },
 };
 use thiserror::Error;
@@ -568,7 +568,7 @@ pub struct ResumeState {
 
 mod bool_bitmap {
     use super::MAX_RESUME_PIECES;
-    use serde::{de, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serialize, Serializer, de};
 
     pub fn serialize<S>(bits: &[bool], serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -866,12 +866,13 @@ mod tests {
     fn rejects_escape_components_and_stale_resume() {
         let root = temp_root();
         let s = Storage::open(&root).unwrap();
-        assert!(s
-            .prepare(&[TorrentFile {
+        assert!(
+            s.prepare(&[TorrentFile {
                 path: vec!["..".into(), "outside".into()],
                 length: 1
             }])
-            .is_err());
+            .is_err()
+        );
         let r = ResumeState {
             version: 1,
             info_hash: [0; 20],
@@ -914,9 +915,11 @@ mod tests {
             10
         );
         assert!(storage.load_resume(hash, 2, 10, 8).is_err());
-        assert!(storage
-            .load_resume(InfoHashV1([8; 20]), 2, 10, 4096)
-            .is_err());
+        assert!(
+            storage
+                .load_resume(InfoHashV1([8; 20]), 2, 10, 4096)
+                .is_err()
+        );
         assert_eq!(
             fs::read_dir(&root).unwrap().count(),
             1,
@@ -1023,12 +1026,14 @@ mod tests {
         let outside = temp_root();
         let storage = Storage::open(&root).unwrap();
         symlink(&outside, root.join("link")).unwrap();
-        assert!(storage
-            .prepare(&[TorrentFile {
-                path: vec!["link".into(), "escape".into()],
-                length: 1,
-            }])
-            .is_err());
+        assert!(
+            storage
+                .prepare(&[TorrentFile {
+                    path: vec!["link".into(), "escape".into()],
+                    length: 1,
+                }])
+                .is_err()
+        );
         assert!(!outside.join("escape").exists());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);

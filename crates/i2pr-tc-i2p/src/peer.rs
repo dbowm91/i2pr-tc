@@ -1,16 +1,16 @@
 //! Peer-wire over I2P streams, with bounded framing and service ownership.
 use crate::{
-    identity::{resolve_peer, DestinationHash, I2pPeer},
-    metadata::{MetadataAssembler, MetadataError, MAX_METADATA_BYTES, METADATA_BLOCK_BYTES},
-    pex::{decode_i2p_pex, encode_i2p_pex, PeerSourceSet},
-    tracker::race_cancel,
     I2pSession, TransportError,
+    identity::{DestinationHash, I2pPeer, resolve_peer},
+    metadata::{MAX_METADATA_BYTES, METADATA_BLOCK_BYTES, MetadataAssembler, MetadataError},
+    pex::{PeerSourceSet, decode_i2p_pex, encode_i2p_pex},
+    tracker::race_cancel,
 };
 use i2pr_tc_core::{
     bencode,
-    extension::{parse_extension_map, parse_ut_metadata, MetadataLimits, UtMetadata},
+    extension::{MetadataLimits, UtMetadata, parse_extension_map, parse_ut_metadata},
     service::{ServiceError, TorrentId, TorrentService},
-    wire::{encode_frame, encode_handshake, FrameDecoder, Handshake, Message, PeerEvent},
+    wire::{FrameDecoder, Handshake, Message, PeerEvent, encode_frame, encode_handshake},
 };
 use i2pr_tc_storage::{Cancellation, TorrentRuntime};
 use std::{
@@ -853,7 +853,7 @@ mod tests {
     };
     use sha1::{Digest, Sha1};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     fn root() -> std::path::PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
