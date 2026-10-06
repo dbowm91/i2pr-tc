@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Status: M001 implementation snapshot; M002/M003 remain gated on M001 closure.
+Status: implementation snapshot through M003/C002; C003 SAM 3.3 transport corrective is active planning authority for the I2P transport.
 
 ## Current crate graph
 
@@ -28,15 +28,49 @@ State ownership is per torrent. The runtime catalog lock only locates an owned p
 
 ## I2P transport
 
-`i2pr-tc-i2p` speaks SAM v3 itself over a caller-supplied raw byte stream, through `sam::SamConnectionFactory`. No router, gateway, or daemon type is named anywhere in the repository, because the managed-runtime contract the app depends on is only "one stream carrying the exact ordered protocol octets this app requested". `SamClient` owns the application Destination, its single bounded session id, per-operation deadlines, and cancellation; a session failure marks the transport unavailable rather than retrying, so an unavailable service cannot produce a reconnect storm. `STREAM FORWARD` is not implemented.
+`i2pr-tc-i2p` speaks SAM over caller-supplied raw protocol byte streams through
+`sam::SamConnectionFactory`; no router, gateway, or daemon type is named by the
+crate. The current implementation is retained C001 code, but it is **not** the
+production transport authority after the C003 review.
 
-Tracker announces are I2P-only and bounded. They carry no `User-Agent`, and the peer extension handshake advertises no client version. Magnet metadata acquisition over `ut_metadata` verifies and promotes the `info` dictionary; `i2p_pex` peer discovery is hash-only and deduplicated.
+C003 changes the target from a STREAM-only SAM session model to SAM 3.3
+PRIMARY/subsessions:
+
+```text
+one primary/control session
+  -> one canonical I2P Destination
+       +-> STREAM child for peers and HTTP trackers
+       +-> DATAGRAM child for future protocol-17 I2P DHT traffic
+       +-> RAW child for future protocol-18 I2P DHT traffic
+```
+
+The primary control connection must remain alive for the session lifetime.
+STREAM attachment connections must not create unrelated sessions. The real
+router-confirmed local Destination and SHA-256 Destination hash are canonical;
+the existing session-ID-derived placeholder hash is explicitly superseded and
+must disappear under C003.
+
+Tracker announces remain I2P-only and bounded. They carry no `User-Agent`,
+and the peer extension handshake advertises no client version. Magnet metadata
+acquisition over `ut_metadata` verifies and promotes the `info` dictionary;
+`i2p_pex` discovery is hash-only and will use the real local Destination hash
+for self-filtering after C003. `STREAM FORWARD` is not part of the managed
+profile.
 
 ## Not yet implemented
 
-M004 requires a composed `SamConnectionFactory` backed by the managed i2pr application runtime, plus qualified live-router interoperability, host-owned local ingress, and private persistent-data semantics. None of that is implemented here, and the transport has not yet been qualified against a live router.
+C003 must first correct the SAM lifecycle and identity model and qualify one
+shared Destination across STREAM, DATAGRAM, and RAW. Its production
+qualification is hard-blocked on i2pr Plan 368, which extends i2pr's closed SAM
+3.1 product with the required SAM 3.3 PRIMARY/subsession profile over the
+existing Streaming and protocol-17/protocol-18 data planes.
 
-M005 requires router-owned ReleaseTarget, private invocation, and staging/export contracts, which do not exist upstream.
+M004 remains blocked behind C003/Plan 368 plus AppManager/process ownership, OS
+containment, host-owned local ingress, and private persistent-data/key
+semantics.
+
+M005 requires router-owned ReleaseTarget, private invocation, and
+staging/export contracts, which do not exist upstream.
 
 ## Resource model
 
@@ -44,4 +78,4 @@ Current bounds cover encoded metainfo, bencode nesting/items/strings, file and a
 
 ## Verification seams
 
-Core has deterministic unit fixtures for bencode, raw-info hashing, magnet parsing, incremental peer-wire framing, PEX records, scheduling, extension block sizes, and service events. Storage has temporary-directory fixtures for cross-file pieces, verified writes, recheck, durable catalog restart, removal, cancellation, path rejection, symlink parents, rooted/stale resume state, progress rebuilt only after stored-piece verification, and runtime block assembly/recovery, including choke and disconnect ownership release. The I2P crate has exact-octet SAM transcript fixtures, full magnet acquisition-to-completion and inbound transfer cases, and a declared test-only harness that qualifies the client against a live SAM bridge; that harness reports a skip with a reason when no bridge is present, so a skip is never mistaken for a pass. It was run against an i2pd 2.61.0 bridge, which exposed four wire defects the transcript fixtures could not, because every fixture had been written to match the client's own assumptions: `SESSION CREATE` omitting its mandatory `DESTINATION=` parameter, base64 in the standard alphabet rather than I2P's, `NAMING LOOKUP` reading `DESTINATION=` where a service answers `VALUE=`, and `STREAM ACCEPT` reading a `DESTINATION=` line where a service writes a bare one. `SamSessionDestination` makes the session identity explicit, and a transient identity is per-connection, so a client that must be dialled injects key material instead. `scripts/check-foundation-boundaries.py --self-test` guards and mutation-tests the crate dependency/source boundary, rejects reintroduced version fingerprints in library source and integration tests, and rejects an undeclared host socket in a test target; it runs in CI. Six cargo-fuzz targets have retained seed corpora, including one for the SAM parser and its base64 decoder; longer fuzz qualification remains closure work.
+Core has deterministic unit fixtures for bencode, raw-info hashing, magnet parsing, incremental peer-wire framing, PEX records, scheduling, extension block sizes, and service events. Storage has temporary-directory fixtures for cross-file pieces, verified writes, recheck, durable catalog restart, removal, cancellation, path rejection, symlink parents, rooted/stale resume state, progress rebuilt only after stored-piece verification, and runtime block assembly/recovery, including choke and disconnect ownership release. The I2P crate has exact-octet SAM transcript fixtures, full magnet acquisition-to-completion and inbound transfer cases, and a declared test-only harness that qualifies the client against a live SAM bridge; that harness reports a skip with a reason when no bridge is present, so a skip is never mistaken for a pass. It was run against an i2pd 2.61.0 bridge, which exposed four wire defects the transcript fixtures could not, because every fixture had been written to match the client's own assumptions: `SESSION CREATE` omitting its mandatory `DESTINATION=` parameter, base64 in the standard alphabet rather than I2P's, `NAMING LOOKUP` reading `DESTINATION=` where a service answers `VALUE=`, and `STREAM ACCEPT` reading a `DESTINATION=` line where a service writes a bare one. Those fixes are retained, but the run did **not** qualify the final transport architecture: subsequent review established that the torrent identity is per long-lived SAM session/primary, not per operation/connection, and that future DHT requires STREAM/DATAGRAM/RAW to share that same Destination. C003 owns that correction. `scripts/check-foundation-boundaries.py --self-test` guards and mutation-tests the crate dependency/source boundary, rejects reintroduced version fingerprints in library source and integration tests, and rejects an undeclared host socket in a test target; it runs in CI. Six cargo-fuzz targets have retained seed corpora, including one for the SAM parser and its base64 decoder; longer fuzz qualification remains closure work.
