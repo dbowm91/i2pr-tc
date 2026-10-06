@@ -65,7 +65,8 @@ M001 core protocol/storage (closed)
                                                                     |
                                                                     +------> M005 router update transport
 
-future M006 I2P DHT/datagram work depends on i2pr Plan 368
+future M006 I2P DHT/datagram work needs a reachable I2P peer (i2pr Plan 368,
+or any router position with working transit)
 ```
 
 The C003 edge into M004 is discharged: the shared-Destination transport exists
@@ -169,11 +170,16 @@ C003 replaced that shape with SAM 3.3 PRIMARY/subsessions:
 - explicit Java I2P/i2pd compatibility, including PRIMARY/MASTER differences;
 - no torrent-specific I2CP+Streaming implementation.
 
-Delivered and qualified against i2pd 2.61.0 over the real bridge. The
-conditional part is upstream: acceptance criterion 8 requires i2pr Plan 368 to
-close so the same matrix can run over the private managed-app SAM seam. Java
-I2P rows and live peer/datagram rows are recorded as unexercised with reasons,
-never as passes. C003 does not implement KRPC/DHT.
+Delivered and qualified over the real bridge against two routers: i2pd 2.61.0
+and, in a corrective pass, Java I2P 2.13.0. Java accepts the normative
+`STYLE=PRIMARY` on the first connection and attaches STREAM, DATAGRAM and RAW
+children, which is what closed criterion 7 and exposed the datagram `PORT=`
+requirement Java enforces (see the closure record §5a). The conditional part is
+upstream and unchanged: acceptance criterion 8 requires i2pr Plan 368 to close so
+the same matrix can run over the private managed-app SAM seam. Live
+peer-to-peer and live datagram rows remain unexecuted with reasons recorded — no
+router available here had working I2P transit, so no peer was ever reachable.
+They are skips, never passes. C003 does not implement KRPC/DHT.
 
 ## M003 — Transmission RPC compatibility
 
@@ -250,8 +256,13 @@ Status: deferred; no handoff plan.
 
 The qualified same-Destination STREAM + DATAGRAM + RAW contract this needed now
 exists, so an M006 plan can be authored against the shipped transport API. Live
-qualification still waits on i2pr Plan 368, or a later i2pd release that serves
-protocol 17/18 children: i2pd 2.61.0 rejects `SESSION ADD` for datagram styles.
+qualification needs a reachable peer: i2pr Plan 368 today, or any two-router
+position with working I2P transit. The "later i2pd release that serves protocol
+17/18 children" gate is now closed on the Java side — Java I2P 2.13.0 attaches
+both child styles — but that only moves the gate; no router available during
+C003's qualification had transit, so no datagram has ever been carried live
+here. `crates/i2pr-tc-i2p/tests/sam_live_two_peer.rs` is committed and skips
+with its reason printed; running it is an infrastructure task, not a coding one.
 
 When that gate clears, perform a fresh I2P BitTorrent DHT/KRPC and UDP-tracker
 review against current I2PSnark and I2P specifications. Do not introduce

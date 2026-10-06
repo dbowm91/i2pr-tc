@@ -15,8 +15,13 @@ with evidence below. Criterion 8 is *not* met and cannot be met from this
 repository: it requires upstream i2pr Plan 368 to close, and Plan 368 is
 registered upstream but not implemented. M004 therefore stays blocked, and M006
 stays deferred behind the same single gate. The transport C003 was asked to
-build is built, qualified against a real router, and is the substrate both of
-those milestones depend on.
+build is built, qualified against two real routers — i2pd 2.61.0 and Java I2P
+2.13.0 — and is the substrate both of those milestones depend on.
+
+A corrective pass after the first closure installed Java I2P and re-ran the
+matrix; it discharged criterion 7 completely and fixed three defects. See §5a
+and §13. It did not change the disposition, because the only open criterion is
+external.
 
 ---
 
@@ -65,7 +70,15 @@ TorrentI2pTransport
 | i2pd under test | 2.61.0 (0.9.70), `/usr/local/bin/i2pd`, bridge at `127.0.0.1:7656` | live |
 | i2pd source consulted | tag `2.61.0`, `libi2pd_client/SAM.cpp`, `libi2pd/Identity.h`, `libi2pd/Identity.cpp`, `libi2pd/Base.cpp` | read during WP1/WP6 |
 | i2pr upstream | `origin/main` = `579725eec85f8a38233a06f86c23cf6efab3f21b`, Plan 368 registered `ready`, not implemented | fetched during WP7 |
-| Java I2P | **not available in this environment** (no Java I2P installation; only an OpenJDK runtime) | see §5 |
+| Java I2P | 2.13.0, installed at `/usr/local/Cellar/i2p/2.13.0`, SAM bridge on `127.0.0.1:17656` | live, second pass — see §5a |
+| Java SAM bridge source | `libexec/lib/sam.jar`, `net/i2p/sam/{SAMv1Handler,PrimarySession}.class` | read in the second pass for reply spellings and the datagram `PORT` rule |
+
+**Reading note.** This record was written in two passes. §2–§4 and the first
+half of §5 describe the state at the implementation commit `a94a7e8`, when
+Java I2P was not installed in this environment. §5a and everything that cites it
+are a later corrective pass that installed Java I2P and qualified it. The
+earlier "not exercised" cells are left standing as written and are superseded,
+not rewritten.
 
 ## 3. PRIMARY/MASTER compatibility disposition
 
@@ -133,18 +146,142 @@ executable in this environment and are recorded as such:
   I2P row is unexercised; the normative `PRIMARY` spelling, `DESTINATION=`
   handling, and Java's datagram-child behaviour are qualified from the
   specification text and i2pd's source, not from a Java router.
+  **(Superseded by §5a — Java I2P 2.13.0 was installed in a later pass and
+  qualified live. This statement stood at `a94a7e8`.)**
 - **No second peer and no datagram-capable router.** `STREAM CONNECT` needs
   `I2PR_TC_LIVE_DESTINATION`; datagram children need a router that accepts
   non-stream subsession styles. The i2pd under test rejects both by construction.
+  **(The datagram-child half of this is superseded by §5a: Java I2P does accept
+  them. The no-second-peer half still stands — see §5a.1.)**
 
 ### Residual incompatibilities
 
 | Severity | Finding |
 |---|---|
-| medium | i2pd 2.61.0 accepts only `STYLE=MASTER` for the shared-Destination session. Handled by a negotiated one-per-connection fallback; no workaround is needed elsewhere. |
+| medium | i2pd 2.61.0 accepts only `STYLE=MASTER` for the shared-Destination session. Handled by a negotiated one-per-connection fallback; no workaround is needed elsewhere. The Java row in §5a shows the normative `PRIMARY` spelling is accepted unchanged, so the fallback is a compatibility path, not the primary path. |
 | medium | i2pd 2.61.0 answers `SESSION ADD` with `STYLE=DATAGRAM`/`STYLE=RAW` with `I2P_ERROR`, and terminates the control connection after the RAW attempt. The client survives this exactly as the model requires — the primary dies, its children become stale, and restoration is explicit — but a production deployment on i2pd cannot use the datagram transports until the router implements them. |
 | low | Both routers' datagram models (`sam.udp.host`/`sam.udp.port`) imply a host UDP socket. This client never requests one: SAM 3.2+ frames datagrams on the bridge socket itself (`DATAGRAM SEND`/`RAW DATA SEND`), which is what keeps the managed profile free of host UDP authority. |
-| low | Java I2P rows are unexercised; see §5. |
+| low | Java I2P rows are unexercised; see §5. Superseded by §5a, which qualifies Java I2P live. |
+
+## 5a. Java I2P qualification (second pass)
+
+Java I2P 2.13.0 was installed in this environment and qualified live through the
+same harness that produced the i2pd rows above. The SAM bridge runs on
+`127.0.0.1:17656`, started via `runplain.sh` with
+`~/Library/Application Support/i2p/clients.config.d/01-net.i2p.sam.SAMBridge-clients.config`
+set to `startOnLoad=true`, `delay=5`, `args=sam.keys 127.0.0.1 17656 i2cp.tcp.port=7654`.
+
+All eight tests in `crates/i2pr-tc-i2p/tests/sam_live_qualification.rs` ran
+against it with no skip of the shared-Destination profile:
+
+| Row | Java I2P 2.13.0 (live) |
+|---|---|
+| `HELLO VERSION MIN=3.1 MAX=3.3` | **PASS** `HELLO REPLY RESULT=OK VERSION=3.3` |
+| shared-Destination create, normative spelling | **PASS** `STYLE=PRIMARY` accepted on the **first** connection |
+| `DESTINATION=` handling | **PASS** transient Destination returned and accepted |
+| local identity from `NAMING LOOKUP NAME=ME` | **PASS** 387-byte Destination, ends `00 00 00`, SHA-256 hash |
+| `SESSION ADD STYLE=STREAM` + `SESSION REMOVE` | **PASS** protocol 6 |
+| `SESSION ADD STYLE=DATAGRAM` + `SESSION REMOVE` | **PASS** protocol 17 (after the `PORT` correction below) |
+| `SESSION ADD STYLE=RAW` + `SESSION REMOVE` | **PASS** protocol 18 (after the `PORT` correction below) |
+| `STREAM CONNECT`/`ACCEPT` with real traffic | not executed — needs a reachable peer Destination (§5a.1) |
+| `DATAGRAM SEND`/`RECEIVE`, `RAW DATA SEND`/`RECEIVE` | not executed — needs a router with transit (§5a.1) |
+
+Verbatim harness output:
+
+```
+live HELLO + shared-Destination SESSION CREATE ok; version=3.3; style=Primary; DESTINATION=Transient; raw connections opened=1
+live shared-Destination profile: version=3.3; accepted style=Primary; raw connections opened=1
+live SESSION ADD ok for Stream: id=…-stream-1 protocol=6
+live SESSION ADD ok for RepliableDatagram: id=…-datagram-1 protocol=17
+live SESSION ADD ok for RawDatagram: id=…-raw-1 protocol=18
+live local identity ok: 387-byte Destination, hash=872c75a11eef301f4635d3222888fb18d5257304e82b9459e15ba6865cea832a
+```
+
+`raw connections opened=1` is the decisive result: against Java I2P the
+normative `PRIMARY` spelling is accepted on the connection that offers it, so the
+`PRIMARY` → `MASTER` fallback in §3 is never taken. The fallback exists for
+i2pd, not because the protocol requires it.
+
+### A second defect this milestone found and fixed
+
+**Java I2P refuses to attach a datagram child that names no `PORT`.** Both
+`SESSION ADD STYLE=DATAGRAM` and `SESSION ADD STYLE=RAW` were answered
+`I2P_ERROR MESSAGE="DATAGRAM subsession must specify PORT"`, and
+`"RAW subsession must specify PORT"` respectively. The strings are in Java's
+own shipped bridge code (`net/i2p/sam/PrimarySession.class` in
+`libexec/lib/sam.jar`), so this is a rule a conforming router enforces, not a
+quirk of one version.
+
+`encode_session_add` now emits `PORT=<from_port>` on datagram and RAW children,
+and still emits no port options at all on a STREAM child. What this does **not**
+do is acquire host UDP authority:
+
+- `HOST`, `sam.udp.host` and `sam.udp.port` are never emitted, on any channel,
+  and `sam_commands_are_exact_octets_for_the_shared_destination_profile` asserts
+  their absence in the exact octets.
+- `PORT` names the datagram server a *host-side* bridge would forward to. This
+  client does not run a host datagram server: inbound datagrams are read on the
+  child's own SAM connection with `DATAGRAM RECEIVE`/`RAW DATA RECEIVE`, which is
+  the SAM 3.2+ framing. The value is therefore inert here.
+- The managed-profile invariant of Plan 368 criterion 10 (no host UDP) is
+  preserved. The parameter is a forwarding target, not a local bind.
+
+The same rule was then mirrored in the in-memory SAM 3.3 service in
+`sam33_shared_destination.rs`, which previously accepted a datagram child
+without `PORT`. A fixture that accepts commands a real router refuses would have
+let this defect survive the cross-transport test that exists to catch exactly
+this class of bug.
+
+### A third correction: the delivery-reply spelling
+
+Java's bridge emits the two-word delivery form `RAW RECEIVED SIZE=<n>`, not
+`RAW DATA RECEIVED` (both appear in `net/i2p/sam/SAMv1Handler.class`, alongside
+`DATAGRAM RECEIVED DESTINATION=` and `RAW SEND `). The reply parser accepts
+`RAW SEND`/`RAW RECEIVE`/`RAW RECEIVED` and `RAW DATA SEND`/`RAW DATA RECEIVE`/
+`RAW DATA RECEIVED` as one arm rather than guessing which spelling a given router
+emits. Covered by
+`sam_reply_parsing_accepts_every_status_line_shape`.
+
+### 5a.1 What Java I2P still could not exercise
+
+Java I2P ran with **no network database**. Its reseed failed
+(`EepGet failed on https://reseed-pl.i2pd.xyz/i2pseeds.su3?netid=2 :
+java.net.SocketTimeoutException: Connect timed out`), and the alternate source
+does not resolve from this host. Independently confirmed from the shell:
+
+```
+curl -m 20 https://reseed-pl.i2pd.xyz/i2pseeds.su3?netid=2   -> connection timed out after 20006 ms
+curl -m 20 https://reseed.i2p-propagation.eu/netDb/netDb-2.su3 -> Could not resolve host
+```
+
+With no netDb there are no tunnels, so no LeaseSet is published and no peer is
+reachable. The same is true of the i2pd under test, which builds SSU2 and 777
+tunnels but passes **0** tunnel tests and never publishes a LeaseSet (clock
+checked and accurate, so this is not a clock-skew artifact).
+
+`crates/i2pr-tc-i2p/tests/sam_live_two_peer.rs` is the harness that would close
+this row: it runs this client on two routers, gives each one shared-Destination
+primary session, and requires one to `STREAM CONNECT` to the other's
+`NAME=ME` Destination and echo bytes. It is committed, compiles, and skips with
+the reason printed:
+
+```
+live two-peer SKIPPED: set I2PR_TC_LIVE_PEER_SAM_ADDR to a second SAM bridge for the peer's router, and I2PR_TC_SAM_ADDR for the dialer's router. Pointing them at two different routers (i2pd and Java I2P) also qualifies cross-router interoperability.
+```
+
+It is a skip, and it is recorded as a skip. Executing it needs a router position
+with working transit — a VPS or a clean UDP path — not more code.
+
+### 5a.2 A guard defect found while recording this evidence
+
+`scripts/check-foundation-boundaries.py` printed a hard-coded list of declared
+test-only connectors instead of the list it had actually collected, so adding a
+second declared connector (`sam_live_two_peer.rs`) did not appear in the output,
+and a pre-existing third one (`crates/i2pr-tc-transmission/tests/transmission_remote.rs`)
+had been concealed since it was written. `check()` now returns the collected
+connectors and `main()` prints the real set; the self-test asserts that a declared
+connector is reported, not merely tolerated. A guard whose evidence line is a
+literal is not evidence.
 
 ## 6. Real local Destination/hash evidence
 
@@ -199,7 +336,7 @@ and the peer suite, all of which pass unchanged.
 
 ```
 cargo fmt --all -- --check                                    OK
-cargo test --workspace --all-targets --locked                129 passed, 0 failed
+cargo test --workspace --all-targets --locked                130 passed, 0 failed
 cargo check --workspace --all-targets --locked               OK
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   clean
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked             clean
@@ -210,10 +347,30 @@ git diff --check                                              clean
 ```
 
 Test breakdown: 46 SAM unit tests (scripted-service transcripts), 3 shared-
-Destination 3.3 fixture tests, 8 live-interoperability tests, 27 core, 38
-storage/transmission, and the remaining targets. `cargo deny` emits the same
-pre-existing `license-not-encountered` and duplicate-`syn` warnings before and
-after this change; no new advisories were introduced.
+Destination 3.3 fixture tests, 8 live-interoperability tests, 1 two-peer live
+test (skips in this environment), 27 core, 38 storage/transmission, and the
+remaining targets. `cargo deny` emits the same pre-existing
+`license-not-encountered` and duplicate-`syn` warnings before and after this
+change; no new advisories were introduced.
+
+The guard's own report is now part of the evidence:
+
+```
+declared test-only host connectors (absent from the managed production profile):
+  crates/i2pr-tc-i2p/tests/sam_live_qualification.rs
+  crates/i2pr-tc-i2p/tests/sam_live_two_peer.rs
+  crates/i2pr-tc-transmission/tests/transmission_remote.rs
+```
+
+Live re-verification after the second pass, against Java I2P 2.13.0 on
+`127.0.0.1:17656`:
+
+```
+cargo test -p i2pr-tc-i2p --lib                                  46 passed, 0 failed
+cargo test -p i2pr-tc-i2p --test sam33_shared_destination        3 passed, 0 failed
+I2PR_TC_SAM_ADDR=127.0.0.1:17656 cargo test --test sam_live_qualification   8 passed, 0 failed
+cargo test -p i2pr-tc-i2p --test sam_live_two_peer               1 skipped with a reason, 0 failed
+```
 
 The SAM fuzz target was extended for the 3.3 surface: `DATAGRAM RECEIVED` and
 `RAW DATA SEND`/`RAW DATA RECEIVED` reply forms with no `RESULT`, the delivery
@@ -230,7 +387,7 @@ verification round-trips under two limit profiles.
 | 4 | PEX self-filtering uses the real local hash | **met** — §8 |
 | 5 | bounded DATAGRAM and RAW share exactly the same local Destination | **met** — §4 (in-memory SAM 3.3 service) |
 | 6 | no DHT algorithm leaked into the SAM codec | **met** — the codec has no KRPC/DHT vocabulary; only SAM commands |
-| 7 | Java I2P and i2pd 3.3 behaviour qualified or residual incompatibilities recorded | **partially met** — i2pd qualified live with residuals recorded (§5); Java I2P unavailable in this environment and recorded as an unexercised row |
+| 7 | Java I2P and i2pd 3.3 behaviour qualified or residual incompatibilities recorded | **met** — i2pd qualified live (§5), Java I2P 2.13.0 qualified live in the second pass (§5a), including the normative `PRIMARY` spelling and all three child styles. Residual incompatibilities recorded for both. |
 | 8 | i2pr Plan 368 closed and the same matrix passing through the managed-app private SAM seam before M004 is promoted | **not met** — Plan 368 is registered upstream and `ready`, not implemented. Outside this repository's control. M004 stays blocked. |
 | 9 | primary/child failure, cancellation, restart, stale-generation tests pass | **met** — §7 |
 
@@ -256,19 +413,48 @@ injection and observation seams (`SamSessionDestination::PrivateKeys`,
 
 **M006 — stays deferred, now with a single named gate.** The handoff condition
 "a qualified same-Destination STREAM + DATAGRAM + RAW contract" is satisfied in
-this repository against a SAM 3.3 service and against a real router's
-STREAM child. The only remaining gate is a router that actually serves
-protocol 17/18 children — upstream Plan 368 today, or an i2pd release later.
-Authoring the M006 plan can start against the shipped transport API; live
-qualification of a DHT cannot.
+this repository against a SAM 3.3 service and against two real routers' child
+channels. Correcting the first pass: the remaining gate is *not* "a router that
+serves protocol 17/18 children" — Java I2P 2.13.0 does, and C003 attaches
+protocol 17 and 18 children on it live (§5a). The gate is a reachable I2P peer:
+upstream Plan 368 today, or any router position with working transit, which
+neither router under test had (§5a.1). Authoring the M006 plan can start against
+the shipped transport API; live qualification of a DHT cannot.
 
 ## 12. What this record does not claim
 
-- It does not claim Java I2P interoperability. No Java router was available.
+- It does not claim Java I2P interoperability beyond what §5a shows. Java I2P
+  2.13.0 accepted the negotiation and all three child styles, but with no
+  network database it carried no traffic. The first pass's statement that no
+  Java router was available stood at commit `a94a7e8` and is superseded by
+  §5a, not retroactively edited.
 - It does not claim live peer-to-peer traffic. No second peer Destination was
-  configured, and the i2pd under test has no working transit, so no LeaseSet is
-  published and no peer is reachable.
-- It does not claim live datagram traffic. The router under test rejects
-  datagram children.
+  configured, and neither router under test has working transit — the i2pd has
+  no viable tunnels and the Java router has no netDb at all — so no LeaseSet is
+  published and no peer is reachable. §5a.1.
+- It does not claim live datagram traffic. The children attach and detach on a
+  real router, but no datagram was ever sent or received over I2P, because no
+  peer is reachable. i2pd additionally refuses datagram children outright.
+- It does not claim that `PORT=` on a datagram child grants this client a host
+  UDP socket. It does the opposite; see §5a.
 - It does not claim upstream Plan 368 progress. Nothing in this repository
-  implements or substitutes for it.
+  implements or substitutes for it, and criterion 8 remains unmet.
+
+## 13. Corrective pass summary
+
+After the first closure, Java I2P 2.13.0 was installed and the matrix re-run.
+The pass produced three corrections and no regressions:
+
+1. `SESSION ADD` for DATAGRAM/RAW now emits `PORT=`, which Java I2P requires and
+   i2pd never sees. Verified live against Java for protocols 17 and 18.
+2. The RAW delivery-reply parser accepts both the `RAW RECEIVED` and
+   `RAW DATA RECEIVED` spellings, confirmed against the strings in Java's own
+   bridge classes.
+3. The in-memory SAM 3.3 service now enforces the same `PORT` rule as a real
+   router, so the cross-transport fixture would catch a regression of (1).
+
+A fourth, unrelated correction: the boundary guard's connector report is now
+derived from what it scanned instead of a hard-coded literal (§5a.2).
+
+Criterion 8 remains unmet and remains outside this repository. The disposition
+is unchanged: **conditionally closed.**
