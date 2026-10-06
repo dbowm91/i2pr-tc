@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/i2pr-tc-core", "crates/i2pr-tc-storage"]
+members = ["crates/i2pr-tc-core", "crates/i2pr-tc-storage", "crates/i2pr-tc-i2p"]
 exclude = ["fuzz"]
 
 [workspace.package]
@@ -13,3 +13,6 @@ sha1 = "0.10"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["io-util", "sync", "time", "macros", "rt"] }
+async-trait = "0.1"
+sha2 = "0.10"

@@ -13,12 +13,16 @@ pub struct TorrentFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TorrentMeta {
     pub info_hash: InfoHashV1,
+    /// Exact bencoded `info` dictionary bytes used to calculate `info_hash`.
+    pub info_bytes: Vec<u8>,
     pub name: String,
     pub piece_length: u32,
     pub piece_hashes: Vec<[u8; 20]>,
     pub files: Vec<TorrentFile>,
     pub total_length: u64,
     pub trackers: Vec<String>,
+    /// Announce tiers retained in declaration order for sequential failover.
+    pub tracker_tiers: Vec<Vec<String>>,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct MetaLimits {
@@ -66,7 +70,8 @@ pub fn parse(input: &[u8], limits: MetaLimits) -> Result<TorrentMeta, MetaError>
             ..Default::default()
         },
     )?;
-    let trackers = parse_trackers(&root, input, limits)?;
+    let tracker_tiers = parse_tracker_tiers(&root, input, limits)?;
+    let trackers = tracker_tiers.iter().flatten().cloned().collect();
     let info =
         bencode::dict_get(&root, input, b"info").ok_or(MetaError::Invalid("missing info"))?;
     let Value::Dict(fields) = info else {
@@ -173,38 +178,54 @@ pub fn parse(input: &[u8], limits: MetaLimits) -> Result<TorrentMeta, MetaError>
     }
     Ok(TorrentMeta {
         info_hash,
+        info_bytes: input[info_start..info_end].to_vec(),
         name,
         piece_length: pl as u32,
         piece_hashes,
         files,
         total_length,
         trackers,
+        tracker_tiers,
     })
 }
 
-fn parse_trackers(
+fn parse_tracker_tiers(
     root: &Value,
     input: &[u8],
     limits: MetaLimits,
-) -> Result<Vec<String>, MetaError> {
-    let mut trackers = Vec::new();
-    if let Some(announce) = bencode::dict_get(root, input, b"announce") {
-        push_tracker(announce, input, limits, &mut trackers)?;
-    }
+) -> Result<Vec<Vec<String>>, MetaError> {
+    let mut result_tiers = Vec::<Vec<String>>::new();
+    let mut seen = BTreeSet::new();
+    let mut count = 0;
     if let Some(tiers) = bencode::dict_get(root, input, b"announce-list") {
-        let Value::List(tiers) = tiers else {
+        let Value::List(encoded_tiers) = tiers else {
             return Err(MetaError::Invalid("announce-list type"));
         };
-        for tier in tiers {
+        for tier in encoded_tiers {
             let Value::List(entries) = tier else {
                 return Err(MetaError::Invalid("announce tier type"));
             };
+            let mut parsed_tier = Vec::new();
             for entry in entries {
-                push_tracker(entry, input, limits, &mut trackers)?;
+                push_tracker(
+                    entry,
+                    input,
+                    limits,
+                    &mut parsed_tier,
+                    &mut seen,
+                    &mut count,
+                )?;
+            }
+            if !parsed_tier.is_empty() {
+                result_tiers.push(parsed_tier);
             }
         }
+    } else if let Some(announce) = bencode::dict_get(root, input, b"announce") {
+        let mut tier = Vec::new();
+        push_tracker(announce, input, limits, &mut tier, &mut seen, &mut count)?;
+        result_tiers.push(tier);
     }
-    Ok(trackers)
+    Ok(result_tiers)
 }
 
 fn push_tracker(
@@ -212,6 +233,8 @@ fn push_tracker(
     input: &[u8],
     limits: MetaLimits,
     trackers: &mut Vec<String>,
+    seen: &mut BTreeSet<String>,
+    count: &mut usize,
 ) -> Result<(), MetaError> {
     let bytes = bencode::bytes(value, input).ok_or(MetaError::Invalid("announce URL type"))?;
     if bytes.is_empty() || bytes.len() > limits.announce_bytes {
@@ -220,10 +243,11 @@ fn push_tracker(
     let tracker = std::str::from_utf8(bytes)
         .map_err(|_| MetaError::Invalid("announce URL encoding"))?
         .to_owned();
-    if !trackers.contains(&tracker) {
-        if trackers.len() >= limits.announce_count {
+    if seen.insert(tracker.clone()) {
+        if *count >= limits.announce_count {
             return Err(MetaError::Limit);
         }
+        *count += 1;
         trackers.push(tracker);
     }
     Ok(())
@@ -364,6 +388,7 @@ mod tests {
         data.extend_from_slice(b"ee");
         let meta = parse(&data, MetaLimits::default()).unwrap();
         let start = data.windows(7).position(|w| w == b"4:infod").unwrap() + 6;
+        assert_eq!(meta.info_bytes, data[start..data.len() - 1]);
         let mut h = Sha1::new();
         h.update(&data[start..data.len() - 1]);
         assert_eq!(meta.info_hash.0, <[u8; 20]>::from(h.finalize()));
@@ -434,6 +459,13 @@ mod tests {
         data.extend_from_slice(b"ee");
         let parsed = parse(&data, MetaLimits::default()).unwrap();
         assert_eq!(parsed.trackers, ["http://a.i2p/a", "http://b.i2p/b"]);
+        assert_eq!(
+            parsed.tracker_tiers,
+            [vec![
+                "http://a.i2p/a".to_owned(),
+                "http://b.i2p/b".to_owned()
+            ]]
+        );
         let limits = MetaLimits {
             announce_count: 1,
             ..MetaLimits::default()

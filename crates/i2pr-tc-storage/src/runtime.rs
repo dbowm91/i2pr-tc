@@ -72,17 +72,16 @@ impl TorrentRuntime {
         let snapshots = service.list()?;
         let mut torrents = BTreeMap::new();
         for snapshot in snapshots {
-            let Some(meta) = service.get_metainfo(snapshot.id)? else {
-                continue;
-            };
+            let meta = service.get_metainfo(snapshot.id)?;
+            let piece_count = meta.as_ref().map_or(0, |meta| meta.piece_hashes.len());
             let mut pieces = PieceMap::new(
-                meta.piece_hashes.len(),
+                piece_count,
                 MAX_RUNTIME_PIECES,
                 max_inflight_per_torrent,
                 max_inflight_per_peer,
             )
             .map_err(map_schedule)?;
-            if snapshot.verified_pieces.len() != meta.piece_hashes.len() {
+            if piece_count > 0 && snapshot.verified_pieces.len() != piece_count {
                 return Err(ServiceError::Storage);
             }
             for (index, verified) in snapshot.verified_pieces.iter().enumerate() {
@@ -93,8 +92,8 @@ impl TorrentRuntime {
             torrents.insert(
                 snapshot.id,
                 TorrentRuntimeState {
-                    piece_length: meta.piece_length,
-                    total_length: meta.total_length,
+                    piece_length: meta.as_ref().map_or(0, |meta| meta.piece_length),
+                    total_length: meta.as_ref().map_or(0, |meta| meta.total_length),
                     pieces,
                     requests: BTreeMap::new(),
                     blocks: BTreeMap::new(),
@@ -146,15 +145,50 @@ impl TorrentRuntime {
         let magnet =
             magnet::parse(uri, Default::default()).map_err(|_| ServiceError::InvalidInput)?;
         self.ensure_capacity(magnet.info_hash.0)?;
-        self.service.add_magnet(uri)
+        let id = self.service.add_magnet(uri)?;
+        self.register(id)?;
+        Ok(id)
     }
 
     /// Call after metadata for a magnet has been received and promoted in the service.
     pub fn refresh_metainfo(&self, id: TorrentId) -> Result<(), ServiceError> {
-        if self.service.get_metainfo(id)?.is_none() {
-            return Err(ServiceError::Unsupported);
+        let meta = self
+            .service
+            .get_metainfo(id)?
+            .ok_or(ServiceError::Unsupported)?;
+        let snapshot = self.service.get(id)?;
+        let piece_count = meta.piece_hashes.len();
+        let mut pieces = PieceMap::new(
+            piece_count,
+            MAX_RUNTIME_PIECES,
+            self.max_inflight_per_torrent,
+            self.max_inflight_per_peer,
+        )
+        .map_err(map_schedule)?;
+        for (index, verified) in snapshot.verified_pieces.iter().enumerate() {
+            if *verified {
+                pieces.mark_verified(index as u32).map_err(map_schedule)?;
+            }
         }
-        self.register(id)
+        let mut torrents = self.torrents.lock().map_err(|_| ServiceError::Storage)?;
+        let state = torrents.get_mut(&id).ok_or(ServiceError::NotFound)?;
+        // Metadata promotion retains established transport sessions, but resets all
+        // availability and scheduling state because it had no piece geometry before.
+        if !state.requests.is_empty() || !state.blocks.is_empty() {
+            return Err(ServiceError::Conflict);
+        }
+        for session in state.peers.values_mut() {
+            session
+                .update_metadata(meta.info_hash.0, meta.piece_length, meta.total_length)
+                .map_err(|_| ServiceError::Conflict)?;
+        }
+        state.piece_length = meta.piece_length;
+        state.total_length = meta.total_length;
+        state.pieces = pieces;
+        state.requests.clear();
+        state.blocks.clear();
+        state.buffered_bytes = 0;
+        Ok(())
     }
 
     pub fn set_peer_availability(
@@ -177,14 +211,18 @@ impl TorrentRuntime {
         peer: [u8; 32],
         bytes: &[u8],
     ) -> Result<Handshake, ServiceError> {
-        let meta = self
-            .service
-            .get_metainfo(id)?
-            .ok_or(ServiceError::Unsupported)?;
+        let snapshot = self.service.get(id)?;
+        let meta = self.service.get_metainfo(id)?;
+        let info_hash = meta
+            .as_ref()
+            .map_or(snapshot.info_hash, |meta| meta.info_hash.0);
+        let piece_length = meta.as_ref().map_or(1, |meta| meta.piece_length);
+        let total_length = meta.as_ref().map_or(0, |meta| meta.total_length);
+        let piece_count = meta.as_ref().map_or(0, |meta| meta.piece_hashes.len());
         let mut session = PeerWireSession::new(
-            meta.info_hash.0,
-            meta.piece_length,
-            meta.total_length,
+            info_hash,
+            piece_length,
+            total_length,
             MAX_BLOCK_LENGTH,
             self.max_inflight_per_peer,
         )
@@ -199,7 +237,7 @@ impl TorrentRuntime {
         }
         state
             .pieces
-            .set_availability(peer, &vec![false; meta.piece_hashes.len()])
+            .set_availability(peer, &vec![false; piece_count])
             .map_err(map_schedule)?;
         state.peers.insert(peer, session);
         Ok(handshake)
@@ -549,13 +587,11 @@ impl TorrentRuntime {
     }
 
     fn register(&self, id: TorrentId) -> Result<(), ServiceError> {
-        let meta = self
-            .service
-            .get_metainfo(id)?
-            .ok_or(ServiceError::Unsupported)?;
+        let meta = self.service.get_metainfo(id)?;
         let snapshot = self.service.get(id)?;
+        let piece_count = meta.as_ref().map_or(0, |meta| meta.piece_hashes.len());
         let mut pieces = PieceMap::new(
-            meta.piece_hashes.len(),
+            piece_count,
             MAX_RUNTIME_PIECES,
             self.max_inflight_per_torrent,
             self.max_inflight_per_peer,
@@ -572,8 +608,8 @@ impl TorrentRuntime {
             .insert(
                 id,
                 TorrentRuntimeState {
-                    piece_length: meta.piece_length,
-                    total_length: meta.total_length,
+                    piece_length: meta.as_ref().map_or(0, |meta| meta.piece_length),
+                    total_length: meta.as_ref().map_or(0, |meta| meta.total_length),
                     pieces,
                     requests: BTreeMap::new(),
                     blocks: BTreeMap::new(),
@@ -657,6 +693,43 @@ mod tests {
             Some(PieceStatus::Verified)
         );
         assert_eq!(reopened.service().get(id).unwrap().verified_bytes, 4);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn metadata_promotion_preserves_peer_handshake_sessions() {
+        let root = root();
+        let runtime = TorrentRuntime::open(&root, &Cancellation::default(), 4, 8, 4).unwrap();
+        let bytes = metainfo();
+        let hash = metainfo::parse(&bytes, Default::default())
+            .unwrap()
+            .info_hash
+            .0;
+        let hash_hex = hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let magnet = format!("magnet:?xt=urn:btih:{hash_hex}");
+        let id = runtime.add_magnet(&magnet).unwrap();
+        let peer = [8; 32];
+        let handshake = Handshake {
+            reserved: [0; 8],
+            info_hash: hash,
+            peer_id: [9; 20],
+        };
+        runtime
+            .accept_peer_handshake(id, peer, &i2pr_tc_core::wire::encode_handshake(&handshake))
+            .unwrap();
+        assert_eq!(runtime.service().add_metainfo(&bytes).unwrap(), id);
+        runtime.refresh_metainfo(id).unwrap();
+        assert_eq!(
+            runtime
+                .process_peer_message(id, peer, Message::Bitfield(vec![0x80]))
+                .unwrap()
+                .event,
+            PeerEvent::Bitfield(vec![true])
+        );
+        drop(runtime);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -20,6 +20,15 @@ ALLOWED_DEPENDENCIES = {
         "serde",
         "serde_json",
     },
+    "i2pr-tc-i2p": {
+        "i2pr-tc-core",
+        "i2pr-tc-storage",
+        "async-trait",
+        "sha1",
+        "sha2",
+        "thiserror",
+        "tokio",
+    },
 }
 FORBIDDEN_SOURCE = re.compile(
     r"(?:std|core)::net\b|tokio::net\b|(?:reqwest|hyper|ureq)::|"
@@ -73,8 +82,10 @@ def self_test() -> list[str]:
         root = Path(tmp)
         core = root / "crates/i2pr-tc-core"
         storage = root / "crates/i2pr-tc-storage"
+        i2p = root / "crates/i2pr-tc-i2p"
         (core / "src").mkdir(parents=True)
         (storage / "src").mkdir(parents=True)
+        (i2p / "src").mkdir(parents=True)
         (core / "Cargo.toml").write_text(
             "[package]\nname='i2pr-tc-core'\n[dependencies]\nsha1='0.10'\n",
             encoding="utf-8",
@@ -84,8 +95,17 @@ def self_test() -> list[str]:
             "i2pr-tc-core={path='../i2pr-tc-core'}\nsha1='0.10'\n",
             encoding="utf-8",
         )
+        (i2p / "Cargo.toml").write_text(
+            "[package]\nname='i2pr-tc-i2p'\n[dependencies]\n"
+            "i2pr-tc-core={path='../i2pr-tc-core'}\n"
+            "i2pr-tc-storage={path='../i2pr-tc-storage'}\n"
+            "async-trait='0.1'\nsha1='0.10'\nsha2='0.10'\n"
+            "thiserror='2'\ntokio='1'\n",
+            encoding="utf-8",
+        )
         (core / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         (storage / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
+        (i2p / "src/lib.rs").write_text("use std::fs;\n", encoding="utf-8")
         if check(root):
             failed.append("boundary guard rejected its clean control fixture")
         with (core / "Cargo.toml").open("a", encoding="utf-8") as stream:

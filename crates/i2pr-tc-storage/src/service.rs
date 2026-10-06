@@ -13,7 +13,7 @@ use i2pr_tc_core::{
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -40,6 +40,8 @@ enum Source {
 struct Record {
     snapshot: TorrentSnapshot,
     source: Source,
+    #[serde(default)]
+    magnet_trackers: Vec<String>,
 }
 
 #[derive(Default)]
@@ -191,6 +193,18 @@ impl PersistentTorrentService {
             if metainfo.is_none() || matches!(&existing.source, Source::Metainfo) {
                 return Ok(id);
             }
+            record.magnet_trackers = if existing.magnet_trackers.is_empty() {
+                match &existing.source {
+                    Source::Magnet(uri) => {
+                        magnet::parse(uri, Default::default())
+                            .map_err(|_| ServiceError::Storage)?
+                            .trackers
+                    }
+                    Source::Metainfo => Vec::new(),
+                }
+            } else {
+                existing.magnet_trackers.clone()
+            };
             record.snapshot.status = existing.snapshot.status;
             record.snapshot.desired_running = existing.snapshot.desired_running;
             record.snapshot.downloaded_bytes = existing.snapshot.downloaded_bytes;
@@ -255,6 +269,7 @@ impl TorrentService for PersistentTorrentService {
                 verified_pieces: vec![false; meta.piece_hashes.len()],
             },
             source: Source::Metainfo,
+            magnet_trackers: Vec::new(),
         };
         self.insert(record, Some(bytes))
     }
@@ -284,6 +299,7 @@ impl TorrentService for PersistentTorrentService {
                 verified_pieces: Vec::new(),
             },
             source: Source::Magnet(uri.to_owned()),
+            magnet_trackers: parsed.trackers,
         };
         self.insert(record, None)
     }
@@ -582,6 +598,69 @@ fn metainfo_path(directory: &Path, id: TorrentId) -> PathBuf {
 }
 
 impl PersistentTorrentService {
+    /// Return metainfo bytes after validating them against the durable catalog
+    /// identity. Used by verified metadata exchange/serving.
+    pub fn get_metainfo_bytes(&self, id: TorrentId) -> Result<Option<Vec<u8>>, ServiceError> {
+        if self.get_metainfo(id)?.is_none() {
+            return Ok(None);
+        }
+        let path = metainfo_path(&self.directory, id);
+        let bytes = read_bounded_file(&path, metainfo::MetaLimits::default().encoded)
+            .map_err(|_| ServiceError::Storage)?;
+        Ok(Some(bytes))
+    }
+
+    /// Tracker URLs from metainfo and magnet `tr` parameters, deduplicated
+    /// while preserving declaration order.
+    pub fn tracker_urls(&self, id: TorrentId) -> Result<Vec<String>, ServiceError> {
+        let magnet_trackers = {
+            let state = self.state.lock().map_err(|_| ServiceError::Storage)?;
+            let record = state.records.get(&id).ok_or(ServiceError::NotFound)?;
+            if record.magnet_trackers.is_empty() {
+                match &record.source {
+                    Source::Magnet(uri) => {
+                        magnet::parse(uri, Default::default())
+                            .map_err(|_| ServiceError::Storage)?
+                            .trackers
+                    }
+                    Source::Metainfo => Vec::new(),
+                }
+            } else {
+                record.magnet_trackers.clone()
+            }
+        };
+        let mut trackers = self
+            .get_metainfo(id)?
+            .map(|meta| meta.trackers)
+            .unwrap_or_default();
+        trackers.extend(magnet_trackers);
+        let mut seen = std::collections::BTreeSet::new();
+        trackers.retain(|tracker| seen.insert(tracker.clone()));
+        Ok(trackers)
+    }
+
+    /// Tracker announce tiers from metainfo, or a single tier from magnet `tr`
+    /// parameters while metadata is unresolved.
+    pub fn tracker_tiers(&self, id: TorrentId) -> Result<Vec<Vec<String>>, ServiceError> {
+        let mut tiers = if let Some(bytes) = self.get_metainfo_bytes(id)? {
+            metainfo::parse(&bytes, Default::default())
+                .map_err(|_| ServiceError::Storage)?
+                .tracker_tiers
+        } else {
+            Vec::new()
+        };
+        let mut seen: BTreeSet<String> = tiers.iter().flatten().cloned().collect();
+        let additional: Vec<_> = self
+            .tracker_urls(id)?
+            .into_iter()
+            .filter(|tracker| seen.insert(tracker.clone()))
+            .collect();
+        if !additional.is_empty() {
+            tiers.push(additional);
+        }
+        Ok(tiers)
+    }
+
     pub(crate) fn payload_root(&self, id: TorrentId) -> PathBuf {
         self.root.join("downloads").join(format!("{:032x}", id.0))
     }
@@ -946,6 +1025,7 @@ mod tests {
             source: Source::Magnet(
                 "magnet:?xt=urn:btih:1111111111111111111111111111111111111111".into(),
             ),
+            magnet_trackers: Vec::new(),
         };
         assert_eq!(service.insert(collision, None), Err(ServiceError::Conflict));
         assert_eq!(service.get(id).unwrap().info_hash, [0; 20]);
@@ -1009,11 +1089,30 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         let id = service
-            .add_magnet(&format!("magnet:?xt=urn:btih:{hash}&dn=pending"))
+            .add_magnet(&format!(
+                "magnet:?xt=urn:btih:{hash}&dn=pending&tr=http%3A%2F%2Ftracker.i2p%2Fannounce"
+            ))
             .unwrap();
         assert!(service.get_metainfo(id).unwrap().is_none());
+        assert_eq!(
+            service.tracker_urls(id).unwrap(),
+            vec!["http://tracker.i2p/announce"]
+        );
+        assert_eq!(
+            service.tracker_tiers(id).unwrap(),
+            vec![vec!["http://tracker.i2p/announce".to_owned()]]
+        );
         assert_eq!(service.add_metainfo(&bytes).unwrap(), id);
         assert_eq!(service.get(id).unwrap().total_bytes, 1);
+        assert_eq!(
+            service.tracker_urls(id).unwrap(),
+            vec!["http://tracker.i2p/announce"]
+        );
+        assert_eq!(
+            service.tracker_tiers(id).unwrap(),
+            vec![vec!["http://tracker.i2p/announce".to_owned()]]
+        );
+        assert_eq!(service.get_metainfo_bytes(id).unwrap().unwrap(), bytes);
         drop(service);
 
         let service = PersistentTorrentService::open(&root).unwrap();
@@ -1024,6 +1123,10 @@ mod tests {
         assert_eq!(
             service.get(id).unwrap().file_priorities,
             [FilePriority::Normal]
+        );
+        assert_eq!(
+            service.tracker_urls(id).unwrap(),
+            vec!["http://tracker.i2p/announce"]
         );
         let _ = fs::remove_dir_all(root);
     }

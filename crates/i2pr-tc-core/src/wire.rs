@@ -393,6 +393,39 @@ impl PeerWireSession {
         Ok(handshake)
     }
 
+    /// Attach verified magnet metadata to an already established peer session.
+    /// No outstanding data request may cross this transition.
+    pub fn update_metadata(
+        &mut self,
+        info_hash: [u8; 20],
+        piece_length: u32,
+        total_length: u64,
+    ) -> Result<(), WireError> {
+        if !self.handshake_complete
+            || self.info_hash != info_hash
+            || piece_length == 0
+            || !self.pending_downloads.is_empty()
+        {
+            return Err(WireError::Invalid);
+        }
+        let count = if total_length == 0 {
+            0
+        } else {
+            let count = 1 + (total_length - 1) / piece_length as u64;
+            if count > 4_000_000 {
+                return Err(WireError::Limit);
+            }
+            count as usize
+        };
+        self.piece_length = piece_length;
+        self.total_length = total_length;
+        self.piece_count = count;
+        self.remote_pieces = vec![false; count];
+        self.bitfield_received = false;
+        self.have_received = false;
+        Ok(())
+    }
+
     pub fn request_block(
         &mut self,
         index: u32,
