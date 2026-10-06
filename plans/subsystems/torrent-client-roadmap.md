@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active planning foundation; M001 ready, M002-M005 dependency-blocked
+Status: active; M001 closed, M002 next, M003 ready, M004/M005 blocked on external contracts
 
 Canonical authority:
 
@@ -57,7 +57,7 @@ M003 can begin after M001 freezes TorrentService and may proceed in parallel wit
 
 ## M001 — Core protocol and storage foundation
 
-Status: ready.
+Status: closed.
 
 Plan:
 `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md`
@@ -68,7 +68,7 @@ Exit: fixtures prove metainfo/infohash/path correctness, peer-wire/extension cod
 
 ## M002 — I2P streaming trackers and PEX
 
-Status: blocked on M001 closure.
+Status: ready.
 
 Plan:
 `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md`
@@ -79,7 +79,7 @@ Exit: qualified swarms transfer data using only I2P address semantics and recove
 
 ## M003 — Transmission RPC compatibility
 
-Status: blocked on M001 TorrentService contract.
+Status: ready.
 
 Plan:
 `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md`

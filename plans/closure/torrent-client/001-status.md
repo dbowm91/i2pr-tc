@@ -1,6 +1,6 @@
 # M001 status report — core protocol and storage foundation
 
-Status: **closing; verification passed, closure record pending final implementation commit**
+Status: **closed**
 
 This record captures the implementation and closure evidence on `codex/planning-foundation`.
 
@@ -15,7 +15,7 @@ This record captures the implementation and closure evidence on `codex/planning-
 - `73cbc38` — made persistent progress depend on hash-verified storage writes and recovery-derived piece verification.
 - `a2d32af` — composed `PieceMap`, bounded block assembly, storage writes, startup recovery, and runtime fixtures; retained fuzz discoveries.
 - `762887a` — connected peer-wire session state to runtime availability, cancellation, download, and verified upload paths; bounded catalog reads and resume bitmaps.
-- Pending M001 completion commit — added CI gates, expanded platform path and peer ownership fixtures, updated architecture and upstream recheck evidence.
+- `61ace42` — added CI gates, expanded platform path and peer ownership fixtures, updated architecture and rechecked upstream handoff evidence.
 
 ## Landed scope
 
@@ -63,7 +63,7 @@ The implemented parser and storage checks reject duplicate/unsorted bencode keys
 
 ## Unblock audit
 
-After the implementation commit and final closure record land, M002 and M003 may be promoted to `ready`: M001 now provides the frozen service contract, event/progress semantics, peer/session state owner, recovery-backed piece map, and CI/fuzz evidence. Promote M002 first per the requested sequence. M004 and M005 remain blocked on the current upstream contract gaps recorded below; no transport or update behavior is added to M001 to bypass those blockers.
+M002 and M003 are promoted to `ready`: M001 provides the frozen service contract, event/progress semantics, peer/session state owner, recovery-backed piece map, and CI/fuzz evidence. M002 is the next implementation plan; M003 remains ready by its independent M001 dependency. M004 and M005 remain blocked on current upstream contract gaps recorded below; no transport or update behavior was added to M001 to bypass those blockers.
 
 Upstream was rechecked on 2026-10-06: `main` is `144c54da2eaaa46497955e0e371f06ab6efcd1b1`, and the managed-runtime branch is `ea7b5ccef9bacbddf826f074cc59d891849a1424`. Plans 349 and 352–355 close corrected v1 policy and the private SAM/I2CP gateway. The current upstream registry says AppManager/package/process work is eligible but not registered; process authentication/runtime, package lifecycle, and sandbox remain unimplemented. The upstream tree also contains no torrent-facing ReleaseTarget or artifact staging/export contract. M004 remains blocked on M002 and the missing managed-app contract; M005 remains blocked on M002/M004 and update handoff interfaces.
 

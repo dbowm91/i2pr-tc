@@ -1,6 +1,6 @@
 # Torrent Client M003 — Transmission RPC Compatibility
 
-Status: blocked on M001 TorrentService contract
+Status: ready
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M003--transmission-rpc-compatibility`

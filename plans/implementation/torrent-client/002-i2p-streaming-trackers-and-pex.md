@@ -1,6 +1,6 @@
 # Torrent Client M002 — I2P Streaming, Trackers, Magnet Metadata, and PEX
 
-Status: blocked on M001 closure
+Status: ready
 
 Source roadmap:
 `plans/subsystems/torrent-client-roadmap.md#M002--i2p-streaming-trackers-and-pex`

@@ -18,15 +18,15 @@ This is the compact control surface for active planning. Canonical direction is 
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies/blockers |
 |---|---|---|---|---|
-| I2P torrent client foundation | closing | `plans/subsystems/torrent-client-roadmap.md` | M001 closing | M001 implementation and local verification are complete; M002/M003 remain blocked until the closure commit lands. M004/M005 retain upstream interface blockers. |
+| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M002 next | M001 closed. M002/M003 are ready; implement M002 next. M004/M005 retain upstream interface blockers. |
 
 ## Implementation handoffs
 
 | Workstream | Milestone | Status | Plan | Dependency note |
 |---|---|---|---|---|
-| Torrent client | M001 core protocol + storage foundation | **closing** | `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md` | Verification passed; closure record and final implementation commit are being recorded. |
-| Torrent client | M002 I2P streaming + trackers + magnet metadata + PEX | **blocked** | `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md` | Hard-blocked on M001 closure; recheck current I2P/SAM specs at handoff. |
-| Torrent client | M003 Transmission RPC compatibility | **blocked** | `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md` | Blocked until M001 freezes TorrentService; may then run parallel to M002. |
+| Torrent client | M001 core protocol + storage foundation | **closed** | `plans/implementation/torrent-client/001-core-protocol-storage-foundation.md` | Closure record: `plans/closure/torrent-client/001-status.md`; implementation commit `61ace427d7157e8f168d14a3bc8cc3501fd6492f`. |
+| Torrent client | M002 I2P streaming + trackers + magnet metadata + PEX | **ready** | `plans/implementation/torrent-client/002-i2p-streaming-trackers-and-pex.md` | M001 closed; recheck current I2P/SAM specs before implementation (in progress). |
+| Torrent client | M003 Transmission RPC compatibility | **ready** | `plans/implementation/torrent-client/003-transmission-rpc-compatibility.md` | M001 freezes TorrentService; execute after M002 in this requested sequence. |
 | Torrent client | M004 i2pr managed-app integration | **blocked** | `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md` | M002 plus corrected/live i2pr app runtime, SAM gateway, local ingress, and persistent-data contract. |
 | Torrent client | M005 router update artifact transport | **blocked** | `plans/implementation/torrent-client/005-router-update-artifact-transport.md` | M002/M004 plus router-owned ReleaseTarget, private app invocation, and artifact staging/export. |
 
