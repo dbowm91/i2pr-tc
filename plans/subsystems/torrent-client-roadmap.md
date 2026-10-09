@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed, M004 blocked on upstream i2pr Plan 368, M005 blocked
+Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed; M006-A ready; M004 decomposed into blocked A–D slices; M005 blocked
 
 Canonical authority:
 
@@ -44,33 +44,24 @@ It does not own i2pr sandboxing, general network policy, router identity, Propos
 ## Dependency graph
 
 ```text
-M001 core protocol/storage (closed)
-   |\
-   | +------> M003 Transmission RPC (closed)
-   |
-   +--------> M002 I2P streaming/trackers/PEX (historically conditionally closed)
-                 |
-                 +------> C001 storage/fingerprint/SAM hardening (closed)
+M001 core/storage (closed)
+  +-> M003 Transmission RPC (closed)
+  +-> M002 -> C001 -> C002 -> C003 (conditionally closed)
                               |
-                              +------> C002 integration reconciliation (closed)
-                                           |
-                                           +------> C003 SAM 3.3 shared-Destination corrective
-                                                        |        (conditionally closed)
-                                                        |
-                              +-- remaining interface dependency:
-                              |      i2pr Plan 368 SAM 3.3 PRIMARY/subsessions
-                              |      (registered ready, not implemented)
-                              v
-                                          +------> M004 managed-app integration
-                                                                    |
-                                                                    +------> M005 router update transport
-
-future M006 I2P DHT/datagram work needs a reachable I2P peer (i2pr Plan 368,
-or any router position with working transit)
+                              +-> M006-A KRPC core (ready)
+                              |      -> M006-B DHT transport/integration (blocked)
+                              |
+                              +-> M004 umbrella
+                                   +-> M004-A (009) blocked on upstream 388
+                                   +-> M004-B (010) blocked on A + SAM/368 + 388
+                                   +-> M004-C (011) blocked on A/B + 385 + 386 + 388
+                                   +-> M004-D (012) blocked on A + 387 + 388
+                                          |
+                                          +-> M004 final closure
+                                                -> M005 update transport
 ```
 
-The C003 edge into M004 is discharged: the shared-Destination transport exists
-and is qualified. What remains on that path is upstream.
+The C003 application implementation edge is discharged. M004 is now split so each remaining upstream interface has a concrete owner. Separately, C003 criterion 8 is completed by M004-B after SAM/368.
 
 Historical milestone closure is not rewritten when a corrective is found. C001
 and C002 remain valid evidence for the work they actually closed. C003 corrects
@@ -214,24 +205,55 @@ the exact integration head, and integrates the foundational work line into
 
 ## M004 — i2pr managed-app integration
 
-Status: blocked.
+Status: blocked umbrella; decomposed.
 
-Plan:
+Umbrella plan:
 `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`
 
-M004's C003 dependency is discharged: the shared-Destination SAM 3.3
-primary/subsession transport exists and is qualified, so M004 composes it rather
-than a SAM 3.1 STREAM-only client. M004 stays blocked on upstream i2pr Plan 368
-and the remaining upstream owners:
+Upstream has advanced materially: managed runtime 369–371 and package/policy
+Plans 382–383 are closed. The remaining integration is split so completed
+foundations do not wait behind unrelated sandbox/ingress work.
 
-- AppManager/package/process lifecycle and process authentication;
-- OS sandbox/resource containment;
-- host-owned local Transmission ingress;
-- private persistent app-data semantics, including persistence of the torrent
-  Destination key material.
+### M004-A — managed package + lifecycle bootstrap
 
-Plans 354/355 remain closed and provide the raw private SAM/I2CP stream and
-app-principal gateway beneath Plan 368.
+Plan: `plans/implementation/torrent-client/009-m004a-managed-package-lifecycle-bootstrap.md`
+
+Status: blocked on upstream Plan 388.
+
+Adds the real app process/package and consumes appd/apphost + persistent policy
+through the external SDK/package builder. It makes no Secured or final-SAM
+claim.
+
+### M004-B — managed SAM 3.3 capability composition
+
+Plan: `plans/implementation/torrent-client/010-m004b-managed-sam33-capability-composition.md`
+
+Status: blocked on M004-A, SAM/368, and Plan 388.
+
+Maps C003's raw connection factory onto app logical SAM streams and discharges
+C003 criterion 8 through i2pr's private app gateway.
+
+### M004-C — private data + persistent Destination + Secured profile
+
+Plan: `plans/implementation/torrent-client/011-m004c-private-data-and-secured-profile.md`
+
+Status: blocked on M004-A/B and upstream Plans 385/386/388.
+
+Places all mutable torrent state and Destination keys below the authorized app
+root and qualifies the real Linux Secured profile with direct host networking
+denied.
+
+### M004-D — Transmission local ingress
+
+Plan: `plans/implementation/torrent-client/012-m004d-transmission-local-ingress.md`
+
+Status: blocked on M004-A and upstream Plans 387/388.
+
+Publishes M003 through host-owned loopback ingress; the app never binds a
+listener.
+
+M004 final closure requires A+B+C and D if Transmission publication is claimed
+as part of the product profile.
 
 ## M005 — Router update artifact transport
 
@@ -250,23 +272,33 @@ Hard/interface blockers:
 The torrent app remains transport only and may not absorb these router trust
 owners.
 
-## Future M006 — datagram trackers and DHT
+## M006 — I2P DHT
 
-Status: deferred; no handoff plan.
+### M006-A — KRPC core
 
-The qualified same-Destination STREAM + DATAGRAM + RAW contract this needed now
-exists, so an M006 plan can be authored against the shipped transport API. Live
-qualification needs a reachable peer: i2pr Plan 368 today, or any two-router
-position with working I2P transit. The "later i2pd release that serves protocol
-17/18 children" gate is now closed on the Java side — Java I2P 2.13.0 attaches
-both child styles — but that only moves the gate; no router available during
-C003's qualification had transit, so no datagram has ever been carried live
-here. `crates/i2pr-tc-i2p/tests/sam_live_two_peer.rs` is committed and skips
-with its reason printed; running it is an infrastructure task, not a coding one.
+Status: ready.
 
-When that gate clears, perform a fresh I2P BitTorrent DHT/KRPC and UDP-tracker
-review against current I2PSnark and I2P specifications. Do not introduce
-conventional IP DHT/UDP as an interim substitute.
+Plan: `plans/implementation/torrent-client/013-m006-i2p-dht-krpc-core.md`
+
+Implements the runtime-neutral I2P BEP-5 profile: 32-byte Destination-hash
+peers, 54-byte nodes, secure node IDs, strict KRPC codec, bounded routing,
+tokens, local tracker state, and restart bootstrap persistence. It has no live
+router dependency and may proceed immediately.
+
+### M006-B — transport + torrent integration
+
+Status: blocked on M006-A.
+
+Plan: `plans/implementation/torrent-client/014-m006-i2p-dht-transport-integration.md`
+
+Binds the core to C003 protocol-17/18 children under the same Destination,
+resolves compact hashes through verified b32 lookup, merges DHT provenance into
+tracker/PEX peer sources, and owns live qualification. Java I2P 2.13.0 is a
+compatible SAM transport; i2pd 2.61.0 is recorded as incompatible with
+DATAGRAM/RAW subsessions. i2pr-managed qualification follows SAM/368 + M004-B.
+
+Datagram tracker support remains a later phase; do not conflate it with the
+first KRPC implementation.
 
 ## Verification strategy
 
