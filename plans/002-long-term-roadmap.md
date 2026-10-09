@@ -28,9 +28,15 @@ Phase 1 and Phase 2 may overlap after Phase 0 freezes TorrentService.
 
 Package the backend as a secured i2pr native app. I2P access comes through app-scoped SAM capability; Transmission ingress comes through router/AppManager-published local service; persistent data uses an authorized app-private root.
 
-Blocked until corresponding i2pr runtime capabilities are implemented and qualified. Direct host networking is not a substitute.
+Execution is decomposed into M004-A through M004-D so closed upstream work can be consumed independently while remaining security interfaces stay fail-closed. Direct host networking is not a substitute.
 
-Plan: `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`.
+Umbrella: `plans/implementation/torrent-client/004-i2pr-managed-app-integration.md`.
+
+Subplans:
+- `009-m004a-managed-package-lifecycle-bootstrap.md` — external SDK/package + appd/apphost lifecycle;
+- `010-m004b-managed-sam33-capability-composition.md` — private SAM 3.3 composition;
+- `011-m004c-private-data-and-secured-profile.md` — app-private state, persistent Destination, Linux Secured;
+- `012-m004d-transmission-local-ingress.md` — host-owned local Transmission publication.
 
 ## Phase 4 — Router update artifact transport
 
@@ -40,9 +46,12 @@ Plan: `plans/implementation/torrent-client/005-router-update-artifact-transport.
 
 ## Phase 5 — Advanced I2P discovery
 
-Future work only: I2P datagram/UDP trackers, I2P DHT through required SAM PRIMARY/subsession/datagram semantics, and possible BitTorrent v2/hybrid evaluation.
+The SAM/datagram prerequisite is now stable on the application side. M006 is split into:
 
-Do not write an M006 handoff until the SAM/datagram interface is stable and Phase 1 interoperability evidence justifies it.
+- M006-A `013-m006-i2p-dht-krpc-core.md` — ready now; runtime-neutral I2P KRPC, secure node IDs, routing, tokens, tracker state, persistence;
+- M006-B `014-m006-i2p-dht-transport-integration.md` — binds protocol 17/18 children to the same Destination and integrates DHT peer discovery.
+
+Datagram/UDP tracker support and BitTorrent v2/hybrid remain later evaluations rather than being folded into the first DHT implementation.
 
 ## Phase 6 — Frontends
 
