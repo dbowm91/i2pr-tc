@@ -1,6 +1,31 @@
 # Torrent Client M004 — i2pr Managed-App Integration
 
-Status: blocked on C003, upstream i2pr Plan 368, and missing app-runtime interfaces
+Status: blocked umbrella; execution decomposed into M004-A through M004-D
+
+## 2026-10-09 upstream reconciliation and decomposition
+
+The previous blocker description is stale. Upstream managed runtime/process and
+package-policy work has advanced:
+
+- Managed native app runtime/369–371 are closed;
+- Plans 382–383 are closed;
+- Plan 385 private app data is ready;
+- Plan 386 Linux Secured sandbox is blocked on 385;
+- Plan 387 host-owned local-service ingress is ready;
+- Plan 388 external Rust app SDK/package builder is ready;
+- the separate colliding SAM/368 remains ready and unimplemented.
+
+This umbrella no longer serves as a single coding-agent handoff. Execute:
+
+- M004-A / Plan 009 — package + lifecycle bootstrap, blocked on 388;
+- M004-B / Plan 010 — private SAM 3.3, blocked on A + SAM/368 + 388;
+- M004-C / Plan 011 — private data + persistent Destination + Secured, blocked
+  on A/B + 385/386/388;
+- M004-D / Plan 012 — host-owned Transmission ingress, blocked on A + 387/388.
+
+The historical C003 dependency amendment below remains useful background, but
+its broad statement that AppManager/package/process ownership is absent is
+superseded by this section.
 
 ## Corrective dependency amendment (2026-10-06)
 
