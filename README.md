@@ -28,11 +28,12 @@ integration.
 | Magnet metadata | implemented | `ut_metadata` acquisition, verification, and promotion |
 | PEX | implemented | bounded peer discovery and source deduplication |
 | Transmission RPC | implemented | request/response adapter over the local RPC surface |
-| Managed i2pr integration | **blocked** | blocked on upstream i2pr Plan 368 SAM 3.3 PRIMARY/subsessions, AppManager/process ownership, sandbox containment, host-owned ingress, and private persistent-data/key semantics |
+| Managed i2pr integration | **decomposed / blocked** | upstream appd/apphost/package/policy foundations are now closed; M004-A–D wait on concrete SAM/368, Plans 385–388 interfaces rather than missing generic AppManager ownership |
+| I2P DHT | **M006-A ready** | KRPC/routing/token/tracker core can proceed now; transport/live integration is M006-B |
 | Update transport | **planned, not implemented** | blocked on upstream router-owned release, invocation, and artifact contracts |
 
 Planning status lives in `plans/registry.md` and
-`plans/subsystems/torrent-client-roadmap.md` on `main`.
+`plans/subsystems/torrent-client-roadmap.md` on `main`. M004 is split into Plans 009–012; M006 DHT is split into Plans 013–014.
 
 ## Architecture
 
@@ -66,7 +67,7 @@ a declared test target for live qualification.
   Destination is qualified over an in-memory SAM 3.3 service and, for STREAM,
   against the live bridge. Java I2P rows, live peer rows, and live datagram rows
   were not executable here and are recorded as unexercised with reasons in
-  `plans/closure/torrent-client/008-c003-status.md`. Upstream i2pr Plan 368 owns
+  `plans/closure/torrent-client/008-c003-status.md`. Upstream i2pr SAM/368 owns
   the remaining managed-seam qualification.
 - Tracker announces carry no `User-Agent`, and the peer extension handshake
   advertises no client version.
