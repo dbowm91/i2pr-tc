@@ -12,7 +12,15 @@ from pathlib import Path
 
 
 ALLOWED_DEPENDENCIES = {
-    "i2pr-tc-core": {"sha1", "thiserror", "serde"},
+    "i2pr-tc-core": {
+        "sha1",
+        "thiserror",
+        "serde",
+        "sha2",
+        "hmac",
+        "subtle",
+        "zeroize",
+    },
     "i2pr-tc-storage": {
         "i2pr-tc-core",
         "sha1",

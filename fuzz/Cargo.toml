@@ -58,3 +58,10 @@ path = "fuzz_targets/sam.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dht_krpc"
+path = "fuzz_targets/dht_krpc.rs"
+test = false
+doc = false
+bench = false
