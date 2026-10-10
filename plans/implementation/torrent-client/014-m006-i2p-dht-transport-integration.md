@@ -1,8 +1,14 @@
 # Torrent Client M006-B — I2P DHT Transport and Torrent Integration
 
-Status: ready
+Status: active
 
 Date: 2026-10-09
+
+Implementation started: 2026-10-10. The first implementation tranche adds
+same-Destination cached DATAGRAM/RAW channel access, bounded query/reply
+correlation, token-scoped announce, DHT peer-source composition, bootstrap
+restore/save, and a deterministic two-node fixture. Live Java I2P traffic and
+the remaining acceptance audit are still open.
 
 Parent roadmap phase: M006 advanced I2P discovery.
 

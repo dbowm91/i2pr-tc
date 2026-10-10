@@ -74,8 +74,14 @@ M006-A closed with the runtime-neutral DHT state core in
 node IDs, routing and transaction state, rotating announce tokens, local peer
 tracking, and a versioned bootstrap snapshot persisted atomically by
 `i2pr-tc-storage`. It performs no network I/O. M006-B owns binding those state
-transitions to the SAM DATAGRAM/RAW children and qualifying live traffic, and
-is ready for implementation.
+transitions to the SAM DATAGRAM/RAW children and qualifying live traffic. The
+bounded transport responder and deterministic two-node path are implemented;
+live qualification remains open. `DhtResponder::run` refuses to start unless
+the core's local hash and query port match the router-confirmed SAM identity;
+the caller supplies unpredictable transaction IDs and the token secret. The
+responder owns one signed receive worker, one raw receive/dispatch worker, and
+one bounded maintenance worker. Its API merges get_peers results into shared
+tracker/PEX/DHT provenance and leaves refresh scheduling to the torrent owner.
 
 ## Not yet implemented
 
@@ -95,7 +101,7 @@ staging/export contracts, which do not exist upstream.
 
 ## Resource model
 
-Current bounds cover encoded metainfo, bencode nesting/items/strings, file and announce counts/lengths, path component lengths/collisions, piece length, resume file size at load, peer-wire frame size at decode, PEX record counts, magnet URI/name/tracker bounds, metadata extension framing, event retention/batch size, catalog records, scheduler in-flight requests, and M006-A's closed DHT core KRPC/routing/transaction/token/tracker/persistence state. Live network behavior belongs to M006-B.
+Current bounds cover encoded metainfo, bencode nesting/items/strings, file and announce counts/lengths, path component lengths/collisions, piece length, resume file size at load, peer-wire frame size at decode, PEX record counts, magnet URI/name/tracker bounds, metadata extension framing, event retention/batch size, catalog records, scheduler in-flight requests, and M006-A's closed DHT core KRPC/routing/transaction/token/tracker/persistence state. M006-B additionally caps network datagrams at 32 KiB, pending raw replies at 256, a traversal at 32 nodes, per-request timeouts at 120 seconds, token-cache entries at 256, and shared peer-source/backoff entries at 2,000. Live network behavior belongs to M006-B.
 
 ## Verification seams
 

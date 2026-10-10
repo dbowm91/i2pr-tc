@@ -12,6 +12,7 @@
 //! channels attached to it. See [`sam`] for the qualified wire behaviour and the
 //! ownership rules.
 
+pub mod dht_transport;
 pub mod identity;
 pub mod metadata;
 pub mod peer;

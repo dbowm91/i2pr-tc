@@ -106,6 +106,14 @@ pub enum Reply {
     },
 }
 
+/// A response plus the authenticated or token-authorized Destination hash it
+/// must be delivered to. The transport must still resolve and verify it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryResponse {
+    pub destination: DestinationHash,
+    pub reply: Reply,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KrpcMessage {
     Query {
@@ -503,6 +511,16 @@ impl DhtCore {
         authenticated_sender: Option<CompactNode>,
         now: u64,
     ) -> Result<Reply, DhtError> {
+        self.handle_query_with_destination(query, authenticated_sender, now)
+            .map(|response| response.reply)
+    }
+
+    pub fn handle_query_with_destination(
+        &mut self,
+        query: Query,
+        authenticated_sender: Option<CompactNode>,
+        now: u64,
+    ) -> Result<QueryResponse, DhtError> {
         match query {
             Query::AnnouncePeer {
                 info_hash,
@@ -515,7 +533,10 @@ impl DhtCore {
                     .validate(&token, info_hash, now)
                     .ok_or(DhtError::Invalid)?;
                 self.tracker.announce(info_hash, destination, seed, now)?;
-                Ok(Reply::Pong { id: self.local.id })
+                Ok(QueryResponse {
+                    destination,
+                    reply: Reply::Pong { id: self.local.id },
+                })
             }
             query => {
                 let sender = authenticated_sender.ok_or(DhtError::Invalid)?;
@@ -568,7 +589,10 @@ impl DhtCore {
                     Ok(()) | Err(DhtError::Capacity) => {}
                     Err(error) => return Err(error),
                 }
-                Ok(reply)
+                Ok(QueryResponse {
+                    destination: sender.destination,
+                    reply,
+                })
             }
         }
     }
@@ -577,6 +601,27 @@ impl DhtCore {
     }
     pub fn tracker(&self) -> &LocalTracker {
         &self.tracker
+    }
+    pub fn local_node(&self) -> CompactNode {
+        self.local
+    }
+    pub fn learn_nodes(&mut self, nodes: impl IntoIterator<Item = CompactNode>, now: u64) {
+        for node in nodes {
+            match self.routing.insert_or_refresh(node, now) {
+                Ok(()) | Err(DhtError::Capacity) => {}
+                Err(_) => {}
+            }
+        }
+    }
+    pub fn mark_node_failure(&mut self, id: NodeId) {
+        self.routing.mark_failure(id);
+    }
+    pub fn closest_nodes(&self, target: NodeId, limit: usize) -> Vec<CompactNode> {
+        self.routing.closest(target, limit)
+    }
+    pub fn maintain(&mut self, now: u64, max_age: u64) {
+        self.routing.remove_expired(now, max_age);
+        self.tracker.expire(now, max_age);
     }
     pub fn bootstrap_snapshot(&self) -> BootstrapSnapshot {
         BootstrapSnapshot {

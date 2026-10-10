@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed; M006-A closed; M006-B ready; M004 decomposed into blocked A–D slices; M005 blocked
+Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed; M006-A closed; M006-B active; M004 decomposed into blocked A–D slices; M005 blocked
 
 Canonical authority:
 
@@ -49,7 +49,7 @@ M001 core/storage (closed)
   +-> M002 -> C001 -> C002 -> C003 (conditionally closed)
                               |
                               +-> M006-A KRPC core (closed)
-                              |      -> M006-B DHT transport/integration (ready)
+                              |      -> M006-B DHT transport/integration (active)
                               |
                               +-> M004 umbrella
                                    +-> M004-A (009) blocked on upstream 388
@@ -287,7 +287,7 @@ router dependency and may proceed immediately.
 
 ### M006-B — transport + torrent integration
 
-Status: ready. Hard dependencies M006-A and retained C003 transport are met.
+Status: active. Hard dependencies M006-A and retained C003 transport are met.
 Working transit and a reachable DHT peer remain operational dependencies for
 live interoperability evidence, not deterministic implementation.
 

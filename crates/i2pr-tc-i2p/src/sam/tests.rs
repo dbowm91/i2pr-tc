@@ -891,7 +891,19 @@ async fn sam_child_channels_are_attached_on_the_control_connection() {
         "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-1 PORT=1 FROM_PORT=1 TO_PORT=2 LISTEN_PORT=3\n",
         OK,
     ));
+    control.push(Step::new(
+        "SESSION ADD STYLE=DATAGRAM ID=i2pr-sid-datagram-2 PORT=12000 FROM_PORT=12000 TO_PORT=12000 LISTEN_PORT=12000\n",
+        OK,
+    ));
+    control.push(Step::new(
+        "SESSION ADD STYLE=RAW ID=i2pr-sid-raw-1 PORT=12001 FROM_PORT=12001 TO_PORT=12001 LISTEN_PORT=12001 PROTOCOL=18\n",
+        OK,
+    ));
     control.push(Step::new("SESSION REMOVE ID=i2pr-sid-stream-1\n", OK));
+    control.push(Step::new(
+        "SESSION ADD STYLE=STREAM ID=i2pr-sid-stream-2\n",
+        OK,
+    ));
     let factory = ScriptedFactory::new(vec![control]);
     let client = build(&factory, "i2pr");
     client
@@ -899,15 +911,19 @@ async fn sam_child_channels_are_attached_on_the_control_connection() {
         .await
         .expect("primary is created");
     let stream = client
-        .add_channel(
-            SamChannelKind::Stream,
-            SamChannelConfig::STREAM,
-            &Cancellation::default(),
-        )
+        .stream_channel(&Cancellation::default())
         .await
         .expect("stream child is attached");
     assert_eq!(stream.generation(), client.generation());
     assert_eq!(client.channel_count(), 1);
+    assert_eq!(
+        client
+            .stream_channel(&Cancellation::default())
+            .await
+            .unwrap()
+            .id(),
+        stream.id()
+    );
     let datagram = client
         .add_channel(
             SamChannelKind::RepliableDatagram,
@@ -922,11 +938,67 @@ async fn sam_child_channels_are_attached_on_the_control_connection() {
         .expect("datagram child is attached");
     assert_eq!(datagram.kind(), SamChannelKind::RepliableDatagram);
     assert_eq!(client.channel_count(), 2);
+    let ports = SamChannelConfig {
+        from_port: 12_000,
+        to_port: 12_000,
+        listen_port: 12_000,
+    };
+    let cached_datagram = client
+        .datagram_channel(ports, &Cancellation::default())
+        .await
+        .expect("cached signed-query child is attached");
+    assert_eq!(cached_datagram.id(), "i2pr-sid-datagram-2");
+    assert_eq!(
+        client
+            .datagram_channel(ports, &Cancellation::default())
+            .await
+            .unwrap()
+            .id(),
+        cached_datagram.id()
+    );
+    assert!(
+        client
+            .datagram_channel(
+                SamChannelConfig {
+                    from_port: 12_002,
+                    to_port: 12_002,
+                    listen_port: 12_002
+                },
+                &Cancellation::default(),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(client.channel_count(), 3);
+    let raw_ports = SamChannelConfig {
+        from_port: 12_001,
+        to_port: 12_001,
+        listen_port: 12_001,
+    };
+    let raw = client
+        .raw_channel(raw_ports, &Cancellation::default())
+        .await
+        .expect("cached raw-response child is attached");
+    assert_eq!(
+        client
+            .raw_channel(raw_ports, &Cancellation::default())
+            .await
+            .unwrap()
+            .id(),
+        raw.id()
+    );
+    assert_eq!(client.channel_count(), 4);
     client
         .remove_channel(&stream, &Cancellation::default())
         .await
         .expect("child is removed");
-    assert_eq!(client.channel_count(), 1);
+    assert_eq!(client.channel_count(), 3);
+    let replacement_stream = client
+        .stream_channel(&Cancellation::default())
+        .await
+        .expect("removed cached channel is recreated");
+    assert_eq!(replacement_stream.id(), "i2pr-sid-stream-2");
+    assert_eq!(client.channel_count(), 4);
     // Every attach and detach ran on the control connection, and no child
     // connection opened a session of its own.
     let written = String::from_utf8_lossy(&factory.written(0)).to_string();

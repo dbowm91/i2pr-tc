@@ -18,7 +18,7 @@ This is the compact control surface for active planning. Canonical direction is 
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies/blockers |
 |---|---|---|---|---|
-| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M006-B ready; M004 split into concrete blocked slices | C003 is conditionally closed with Java I2P+i2pd qualification; upstream SAM/368 has a local implementation and closeout awaiting integration to main. M006-A is closed with the runtime-neutral KRPC core; M006-B owns transport integration and live qualification. M004-A waits on upstream 388 SDK; M004-B on M004-A + 388; M004-C on 385/386/388; M004-D on 387/388. |
+| I2P torrent client foundation | active | `plans/subsystems/torrent-client-roadmap.md` | M006-B active; M004 split into concrete blocked slices | C003 is conditionally closed with Java I2P+i2pd qualification; upstream SAM/368 has a local implementation and closeout awaiting integration to main. M006-A is closed with the runtime-neutral KRPC core; M006-B is implementing transport integration and deterministic qualification. M004-A waits on upstream 388 SDK; M004-B on M004-A + 388; M004-C on 385/386/388; M004-D on 387/388. |
 
 ## Implementation handoffs
 
@@ -36,12 +36,12 @@ This is the compact control surface for active planning. Canonical direction is 
 | Torrent client | M004-C private data + persistent Destination + Secured profile | **blocked** | `plans/implementation/torrent-client/011-m004c-private-data-and-secured-profile.md` | Blocked on M004-A/B plus upstream 385 private data, 386 Linux Secured sandbox, and 388 SDK. |
 | Torrent client | M004-D host-owned Transmission local ingress | **blocked** | `plans/implementation/torrent-client/012-m004d-transmission-local-ingress.md` | Blocked on M004-A plus upstream 387 host-owned local-service ingress and 388 SDK. |
 | Torrent client | M006-A I2P DHT KRPC core | **closed** | `plans/implementation/torrent-client/013-m006-i2p-dht-krpc-core.md` | Closure: `plans/closure/torrent-client/013-m006a-status.md`; implementation `abe4fbb967aeefef160b249a564dfe0a40ae7eb6`. Bounded runtime-neutral KRPC, I2P node/peer forms, routing, tokens, tracker, and bootstrap persistence. |
-| Torrent client | M006-B I2P DHT transport + torrent integration | **ready** | `plans/implementation/torrent-client/014-m006-i2p-dht-transport-integration.md` | M006-A is closed and C003's same-Destination SAM transport is retained. Java I2P supports SAM DATAGRAM/RAW; final live qualification requires working I2P transit and a reachable DHT peer. i2pr-managed qualification additionally waits on upstream SAM/368 integration and M004-B. |
+| Torrent client | M006-B I2P DHT transport + torrent integration | **active** | `plans/implementation/torrent-client/014-m006-i2p-dht-transport-integration.md` | M006-A is closed and C003's same-Destination SAM transport is retained. The first transport/core integration tranche and two-node fixture are implemented; live Java I2P qualification still requires working I2P transit and a reachable DHT peer. i2pr-managed qualification additionally waits on upstream SAM/368 integration and M004-B. |
 | Torrent client | M005 router update artifact transport | **blocked** | `plans/implementation/torrent-client/005-router-update-artifact-transport.md` | Requires M004 plus router-owned ReleaseTarget, private invocation, and capability-mediated artifact staging/export contracts. |
 
 ## Deferred work
 
-M006 is now planned as M006-A/M006-B. M006-A is closed and owns deterministic KRPC/routing/token/tracker/persistence work with no live-router dependency. M006-B is ready and owns C003 DATAGRAM/RAW binding, peer-source integration, and live qualification. Java I2P 2.13.0 already accepts protocol-17/18 children; i2pd 2.61.0 does not.
+M006 is now planned as M006-A/M006-B. M006-A is closed and owns deterministic KRPC/routing/token/tracker/persistence work with no live-router dependency. M006-B is active and owns C003 DATAGRAM/RAW binding, peer-source integration, and live qualification. Java I2P 2.13.0 already accepts protocol-17/18 children; i2pd 2.61.0 does not.
 
 Frontend work is deferred until backend/RPC/managed-runtime boundaries are stable.
 
