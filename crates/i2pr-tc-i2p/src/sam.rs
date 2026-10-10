@@ -2643,6 +2643,10 @@ impl<F: SamConnectionFactory> I2pSession for SamClient<F> {
         self.local_destination_hash()
     }
 
+    fn generation(&self) -> u64 {
+        SamClient::generation(self)
+    }
+
     async fn lookup(&self, name: &str) -> Result<identity::Destination, TransportError> {
         self.nam_lookup(name, &Cancellation::default()).await
     }

@@ -21,11 +21,13 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
-use tokio::{sync::oneshot, task::JoinSet};
+use tokio::{sync::oneshot, task::JoinSet, time::Instant};
 
 pub const MAX_DHT_DATAGRAM_BYTES: usize = 32 * 1024;
+const MAX_DESTINATION_CACHE_ENTRIES: usize = 256;
+const DESTINATION_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DhtPorts {
@@ -282,6 +284,7 @@ pub struct DhtResponder<S> {
     now: Arc<dyn Fn() -> u64 + Send + Sync>,
     pending: Arc<Mutex<BTreeMap<Vec<u8>, PendingRpc>>>,
     tokens: Mutex<BTreeMap<(i2pr_tc_core::dht::DestinationHash, InfoHash), CachedToken>>,
+    destinations: Arc<Mutex<BTreeMap<i2pr_tc_core::dht::DestinationHash, CachedDestination>>>,
     storage: Option<Arc<i2pr_tc_storage::Storage>>,
 }
 
@@ -294,6 +297,68 @@ struct PendingRpc {
 struct CachedToken {
     value: Vec<u8>,
     expires_at: u64,
+}
+
+struct CachedDestination {
+    value: Destination,
+    expires_at: Instant,
+    generation: u64,
+}
+
+async fn resolve_destination_cached<S: crate::I2pSession + ?Sized>(
+    session: &S,
+    cache: &Mutex<BTreeMap<i2pr_tc_core::dht::DestinationHash, CachedDestination>>,
+    hash: i2pr_tc_core::dht::DestinationHash,
+    cancellation: &Cancellation,
+) -> Result<Destination, TransportError> {
+    let generation = session.generation();
+    let now = Instant::now();
+    {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| TransportError::Session("DHT destination cache lock poisoned".into()))?;
+        cache.retain(|_, entry| entry.expires_at > now && entry.generation == generation);
+        if let Some(entry) = cache.get(&hash) {
+            return Ok(entry.value.clone());
+        }
+    }
+
+    // `resolve_peer` constructs only the canonical b32.i2p name and verifies
+    // the returned Destination hash before it can enter this cache.
+    let destination = crate::tracker::race_cancel(
+        crate::identity::resolve_peer(session, &crate::identity::I2pPeer::from_hash(hash.0)),
+        cancellation,
+    )
+    .await??;
+    if session.generation() != generation {
+        return Err(TransportError::Stale(
+            "SAM generation changed during DHT lookup",
+        ));
+    }
+
+    let now = Instant::now();
+    let mut cache = cache
+        .lock()
+        .map_err(|_| TransportError::Session("DHT destination cache lock poisoned".into()))?;
+    cache.retain(|_, entry| entry.expires_at > now && entry.generation == generation);
+    if cache.len() >= MAX_DESTINATION_CACHE_ENTRIES
+        && !cache.contains_key(&hash)
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.expires_at)
+            .map(|(hash, _)| *hash)
+    {
+        cache.remove(&oldest);
+    }
+    cache.insert(
+        hash,
+        CachedDestination {
+            value: destination.clone(),
+            expires_at: now + DESTINATION_CACHE_TTL,
+            generation,
+        },
+    );
+    Ok(destination)
 }
 
 impl<S> DhtResponder<S>
@@ -315,6 +380,7 @@ where
             now: Arc::new(now),
             pending: Arc::new(Mutex::new(BTreeMap::new())),
             tokens: Mutex::new(BTreeMap::new()),
+            destinations: Arc::new(Mutex::new(BTreeMap::new())),
             storage: None,
         }
     }
@@ -369,11 +435,7 @@ where
         if wire.len() > MAX_DHT_DATAGRAM_BYTES {
             return Err(TransportError::Protocol);
         }
-        let destination = crate::identity::resolve_peer(
-            self.session.as_ref(),
-            &crate::identity::I2pPeer::from_hash(node.destination.0),
-        )
-        .await?;
+        let deadline = Instant::now() + timeout;
         let (sender, receiver) = oneshot::channel();
         {
             let mut pending = self
@@ -388,31 +450,66 @@ where
                 transaction.clone(),
                 PendingRpc {
                     expected: node,
-                    expires_at: Instant::now() + timeout,
+                    expires_at: deadline,
                     response: sender,
                 },
             );
         }
-        let sent = if is_announce {
-            self.session
-                .send_raw(
+        let destination = match crate::tracker::race_cancel(
+            tokio::time::timeout_at(
+                deadline,
+                resolve_destination_cached(
+                    self.session.as_ref(),
+                    &self.destinations,
+                    node.destination,
+                    cancellation,
+                ),
+            ),
+            cancellation,
+        )
+        .await
+        {
+            Ok(Ok(Ok(destination))) => destination,
+            Ok(Err(_)) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&transaction);
+                }
+                return Err(TransportError::Timeout);
+            }
+            Ok(Ok(Err(error))) | Err(error) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&transaction);
+                }
+                return Err(error);
+            }
+        };
+        let sending = if is_announce {
+            tokio::time::timeout_at(
+                deadline,
+                self.session.send_raw(
                     &destination,
                     self.ports,
                     node.query_port.saturating_add(1),
                     &wire,
                     cancellation,
-                )
-                .await
+                ),
+            )
         } else {
-            self.session
-                .send_signed(
+            tokio::time::timeout_at(
+                deadline,
+                self.session.send_signed(
                     &destination,
                     self.ports,
                     node.query_port,
                     &wire,
                     cancellation,
-                )
-                .await
+                ),
+            )
+        };
+        let sent = match crate::tracker::race_cancel(sending, cancellation).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(TransportError::Timeout),
+            Err(error) => Err(error),
         };
         if let Err(error) = sent {
             if let Ok(mut pending) = self.pending.lock() {
@@ -421,13 +518,13 @@ where
             return Err(error);
         }
         let received =
-            crate::tracker::race_cancel(tokio::time::timeout(timeout, receiver), cancellation)
+            crate::tracker::race_cancel(tokio::time::timeout_at(deadline, receiver), cancellation)
                 .await;
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(&transaction);
         }
-        match received? {
-            Ok(Ok(message)) => {
+        match received {
+            Ok(Ok(Ok(message))) => {
                 let nodes = match &message {
                     KrpcMessage::Reply {
                         reply: Reply::Nodes { nodes, .. } | Reply::Peers { nodes, .. },
@@ -440,13 +537,14 @@ where
                 }
                 Ok(message)
             }
-            Ok(Err(_)) => Err(TransportError::Session("DHT reply receiver closed".into())),
-            Err(_) => {
+            Ok(Ok(Err(_))) => Err(TransportError::Session("DHT reply receiver closed".into())),
+            Ok(Err(_)) => {
                 if let Ok(mut core) = self.core.lock() {
                     core.mark_node_failure(node.id);
                 }
                 Err(TransportError::Timeout)
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -684,7 +782,10 @@ where
         let cancel = self.cancellation.clone();
         let ports = self.ports;
         let now = self.now.clone();
-        workers.spawn(async move { signed_query_loop(session, core, ports, cancel, now).await });
+        let destinations = self.destinations.clone();
+        workers.spawn(async move {
+            signed_query_loop(session, core, ports, cancel, now, destinations).await
+        });
 
         let session = self.session.clone();
         let core = self.core.clone();
@@ -692,8 +793,9 @@ where
         let ports = self.ports;
         let now = self.now.clone();
         let pending = self.pending.clone();
+        let destinations = self.destinations.clone();
         workers.spawn(async move {
-            raw_announce_loop(session, core, ports, cancel, now, pending).await
+            raw_announce_loop(session, core, ports, cancel, now, pending, destinations).await
         });
 
         let core = self.core.clone();
@@ -781,6 +883,7 @@ async fn signed_query_loop<S>(
     ports: DhtPorts,
     cancellation: Cancellation,
     now: Arc<dyn Fn() -> u64 + Send + Sync>,
+    destinations: Arc<Mutex<BTreeMap<i2pr_tc_core::dht::DestinationHash, CachedDestination>>>,
 ) -> Result<(), TransportError>
 where
     S: crate::I2pSession + DhtDatagramIo + 'static,
@@ -813,9 +916,11 @@ where
         let Ok((remote_response_port, response, authorized)) = handled else {
             continue;
         };
-        let destination = crate::identity::resolve_peer(
+        let destination = resolve_destination_cached(
             session.as_ref(),
-            &crate::identity::I2pPeer::from_hash(authorized.destination.0),
+            &destinations,
+            authorized.destination,
+            &cancellation,
         )
         .await?;
         session
@@ -838,6 +943,7 @@ async fn raw_announce_loop<S>(
     cancellation: Cancellation,
     now: Arc<dyn Fn() -> u64 + Send + Sync>,
     pending: Arc<Mutex<BTreeMap<Vec<u8>, PendingRpc>>>,
+    destinations: Arc<Mutex<BTreeMap<i2pr_tc_core::dht::DestinationHash, CachedDestination>>>,
 ) -> Result<(), TransportError>
 where
     S: crate::I2pSession + DhtDatagramIo + 'static,
@@ -922,9 +1028,11 @@ where
         let Ok((destination_hash, response, _)) = handled else {
             continue;
         };
-        let destination = crate::identity::resolve_peer(
+        let destination = resolve_destination_cached(
             session.as_ref(),
-            &crate::identity::I2pPeer::from_hash(destination_hash.0),
+            &destinations,
+            i2pr_tc_core::dht::DestinationHash(destination_hash.0),
+            &cancellation,
         )
         .await?;
         session
@@ -954,7 +1062,10 @@ mod tests {
     use crate::{I2pSession, I2pStream};
     use async_trait::async_trait;
     use i2pr_tc_core::dht::{DestinationHash as CoreHash, InfoHash, NodeId, Reply};
-    use std::sync::Mutex as StdMutex;
+    use std::sync::{
+        Mutex as StdMutex,
+        atomic::{AtomicU64, AtomicUsize},
+    };
     use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
     fn destination(byte: u8) -> Destination {
@@ -988,6 +1099,8 @@ mod tests {
     struct FakeDhtSession {
         local: Destination,
         remote: Destination,
+        generation: AtomicU64,
+        lookup_count: AtomicUsize,
         signed_sent: StdMutex<Vec<Vec<u8>>>,
         raw_sent: StdMutex<Vec<Vec<u8>>>,
         out_signed: Option<mpsc::Sender<sam::SamDatagram>>,
@@ -1002,7 +1115,12 @@ mod tests {
             Ok(self.local.hash())
         }
 
+        fn generation(&self) -> u64 {
+            self.generation.load(Ordering::Acquire)
+        }
+
         async fn lookup(&self, name: &str) -> Result<Destination, TransportError> {
+            self.lookup_count.fetch_add(1, Ordering::AcqRel);
             let expected = format!(
                 "{}.b32.i2p",
                 crate::identity::encode_base32(&self.remote.hash())
@@ -1125,6 +1243,85 @@ mod tests {
         assert_eq!(DhtPorts::new(u16::MAX - 1).unwrap().response, u16::MAX);
     }
 
+    #[tokio::test]
+    async fn destination_cache_is_positive_bounded_by_expiry_and_session_generation() {
+        let local = destination(1);
+        let remote = destination(2);
+        let session = FakeDhtSession {
+            local,
+            remote: remote.clone(),
+            generation: AtomicU64::new(7),
+            lookup_count: AtomicUsize::new(0),
+            signed_sent: StdMutex::new(Vec::new()),
+            raw_sent: StdMutex::new(Vec::new()),
+            out_signed: None,
+            out_raw: None,
+            signed_rx: AsyncMutex::new(mpsc::channel(1).1),
+            raw_rx: AsyncMutex::new(mpsc::channel(1).1),
+        };
+        let cache = Mutex::new(BTreeMap::new());
+        let hash = i2pr_tc_core::dht::DestinationHash(remote.hash());
+        let cancellation = Cancellation::default();
+        for byte in 1..=MAX_DESTINATION_CACHE_ENTRIES {
+            let mut cached_hash = [0; 32];
+            cached_hash[..2].copy_from_slice(&(byte as u16).to_be_bytes());
+            cache.lock().unwrap().insert(
+                i2pr_tc_core::dht::DestinationHash(cached_hash),
+                CachedDestination {
+                    value: remote.clone(),
+                    expires_at: Instant::now() + Duration::from_secs(30),
+                    generation: 7,
+                },
+            );
+        }
+
+        assert_eq!(
+            resolve_destination_cached(&session, &cache, hash, &cancellation)
+                .await
+                .unwrap(),
+            remote
+        );
+        assert!(cache.lock().unwrap().contains_key(&hash));
+        assert_eq!(cache.lock().unwrap().len(), MAX_DESTINATION_CACHE_ENTRIES);
+        assert_eq!(session.lookup_count.load(Ordering::Acquire), 1);
+        resolve_destination_cached(&session, &cache, hash, &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(session.lookup_count.load(Ordering::Acquire), 1);
+
+        session.generation.store(8, Ordering::Release);
+        cache.lock().unwrap().insert(
+            hash,
+            CachedDestination {
+                value: session.remote.clone(),
+                expires_at: Instant::now() + Duration::from_secs(30),
+                generation: 7,
+            },
+        );
+        resolve_destination_cached(&session, &cache, hash, &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(session.lookup_count.load(Ordering::Acquire), 2);
+        {
+            let cached = cache.lock().unwrap();
+            assert_eq!(cached.len(), 1);
+            assert_eq!(cached.get(&hash).unwrap().generation, 8);
+        }
+
+        cache.lock().unwrap().insert(
+            hash,
+            CachedDestination {
+                value: session.remote.clone(),
+                expires_at: Instant::now() - Duration::from_secs(1),
+                generation: 8,
+            },
+        );
+        resolve_destination_cached(&session, &cache, hash, &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(session.lookup_count.load(Ordering::Acquire), 3);
+    }
+
     #[test]
     fn signed_query_reply_uses_authenticated_destination_and_adjacent_raw_port() {
         let local = destination(1);
@@ -1215,6 +1412,8 @@ mod tests {
         let session = Arc::new(FakeDhtSession {
             local: local.clone(),
             remote: remote.clone(),
+            generation: AtomicU64::new(1),
+            lookup_count: AtomicUsize::new(0),
             signed_sent: StdMutex::new(Vec::new()),
             raw_sent: StdMutex::new(Vec::new()),
             out_signed: None,
@@ -1335,6 +1534,8 @@ mod tests {
         let session_a = Arc::new(FakeDhtSession {
             local: destination_a.clone(),
             remote: destination_b.clone(),
+            generation: AtomicU64::new(1),
+            lookup_count: AtomicUsize::new(0),
             signed_sent: StdMutex::new(Vec::new()),
             raw_sent: StdMutex::new(Vec::new()),
             out_signed: Some(b_signed_tx),
@@ -1345,6 +1546,8 @@ mod tests {
         let session_b = Arc::new(FakeDhtSession {
             local: destination_b.clone(),
             remote: destination_a.clone(),
+            generation: AtomicU64::new(1),
+            lookup_count: AtomicUsize::new(0),
             signed_sent: StdMutex::new(Vec::new()),
             raw_sent: StdMutex::new(Vec::new()),
             out_signed: Some(a_signed_tx),
@@ -1508,6 +1711,8 @@ mod tests {
         let session = Arc::new(FakeDhtSession {
             local: local.clone(),
             remote,
+            generation: AtomicU64::new(1),
+            lookup_count: AtomicUsize::new(0),
             signed_sent: StdMutex::new(Vec::new()),
             raw_sent: StdMutex::new(Vec::new()),
             out_signed: None,

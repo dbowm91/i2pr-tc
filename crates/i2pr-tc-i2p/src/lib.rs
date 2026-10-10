@@ -67,6 +67,13 @@ pub trait I2pSession: Send + Sync {
     /// out of PEX, announces, and self-connection checks.
     fn local_peer_hash(&self) -> Result<[u8; 32], TransportError>;
 
+    /// Monotonic identity/session generation used to scope cached router
+    /// lookups. Implementations without session replacement may keep the
+    /// default generation; SAM-backed clients expose their live generation.
+    fn generation(&self) -> u64 {
+        0
+    }
+
     async fn lookup(&self, name: &str) -> Result<identity::Destination, TransportError>;
 
     async fn connect(

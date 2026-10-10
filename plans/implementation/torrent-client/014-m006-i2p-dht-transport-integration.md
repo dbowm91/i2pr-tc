@@ -2,7 +2,7 @@
 
 Status: active
 
-Date: 2026-10-09
+Date: 2026-10-10
 
 Implementation started: 2026-10-10. The first implementation tranche adds
 same-Destination cached DATAGRAM/RAW channel access, bounded query/reply
@@ -73,11 +73,14 @@ The DHT core itself remains unaware of SAM naming strings.
 Own bounded asynchronous tasks for:
 
 - receive loops for protocol 17/18;
-- transaction timeout/expiry;
-- query scheduling;
-- routing maintenance/exploration;
-- torrent get_peers/announce operations;
-- periodic persistence.
+- pending reply correlation and timeout cleanup;
+- routing maintenance and periodic persistence.
+
+This repository's `TorrentRuntime` deliberately does not own network sessions
+or a per-torrent async actor. M006-B therefore exposes bounded caller-driven
+`get_peers`, iterative traversal, and token-authorized announce operations;
+the torrent owner decides when to start, refresh, and stop discovery. The
+responder must not invent a second scheduler or hold a torrent lifecycle lock.
 
 All queues and JoinSets have explicit ceilings. Cancellation stops admission,
 cancels outstanding work, joins/aborts children, and flushes only bounded
@@ -121,11 +124,15 @@ DHT failure never blocks tracker/PEX operation.
 
 For a running torrent:
 
-- perform bounded `get_peers`;
-- optionally announce to the closest token-authorized nodes;
-- refresh before peer starvation, not continuously;
+- the torrent owner can perform bounded `get_peers` and iterative traversal;
+- the torrent owner can announce only to nodes with a cached, unexpired token
+  for the same infohash;
+- the API permits refresh before peer starvation and does not run continuous
+  background polling;
 - distinguish seed/leech flags if the deployed profile supports them;
-- unannounce/expire local state on stop within bounded semantics;
+- on stop, the owner withdraws DHT peer-source provenance; remote announce
+  records expire under the deployed profile because no unannounce operation is
+  defined;
 - magnets may use DHT for peer discovery, but metadata still requires
   `ut_metadata` and exact infohash verification.
 
@@ -176,7 +183,8 @@ WP2 — add bounded DATAGRAM/RAW engine and hash-resolution cache.
 
 WP3 — integrate DHT provenance into peer-source state.
 
-WP4 — torrent get-peers/announce lifecycle.
+WP4 — bounded caller-driven get-peers/announce lifecycle operations and stop
+semantics consistent with the networked torrent owner boundary.
 
 WP5 — persistence/restart/cancellation/backpressure.
 
