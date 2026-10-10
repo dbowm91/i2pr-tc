@@ -1,6 +1,6 @@
 # Torrent Client M004-B — Managed SAM 3.3 Capability Composition
 
-Status: blocked on upstream SAM/368 and Plan 388
+Status: blocked on M004-A and upstream Plan 388; SAM/368 closeout awaits integration to main
 
 Date: 2026-10-09
 
@@ -13,7 +13,7 @@ Hard dependencies:
 
 - C003 conditionally closed with application transport implemented.
 - M004-A closed.
-- upstream SAM/368 closed.
+- upstream SAM/368 implementation and closeout integrated to main.
 - upstream Plan 388 closed.
 
 ## 1. Objective

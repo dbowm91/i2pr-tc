@@ -29,7 +29,7 @@ integration.
 | PEX | implemented | bounded peer discovery and source deduplication |
 | Transmission RPC | implemented | request/response adapter over the local RPC surface |
 | Managed i2pr integration | **decomposed / blocked** | upstream appd/apphost/package/policy foundations are now closed; M004-A–D wait on Plans 385–388 interfaces rather than missing generic AppManager ownership |
-| I2P DHT | **M006-A active** | KRPC/routing/token/tracker core is under implementation; transport/live integration is M006-B |
+| I2P DHT | **M006-B ready** | bounded KRPC/routing/token/tracker core is closed; transport/live integration is M006-B |
 | Update transport | **planned, not implemented** | blocked on upstream router-owned release, invocation, and artifact contracts |
 
 Planning status lives in `plans/registry.md` and

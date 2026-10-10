@@ -1,6 +1,6 @@
 # Torrent Client M006-B — I2P DHT Transport and Torrent Integration
 
-Status: blocked on M006-A
+Status: ready
 
 Date: 2026-10-09
 
@@ -10,7 +10,7 @@ Primary class: discovery capability + async networking/lifecycle invariant.
 
 Hard dependencies:
 
-- M006-A closed.
+- M006-A closed (closure: `plans/closure/torrent-client/013-m006a-status.md`).
 - C003 transport implementation retained.
 - for i2pr-managed qualification: upstream SAM/368 + M004-B.
   These are not required to develop the transport adapter against Java I2P.

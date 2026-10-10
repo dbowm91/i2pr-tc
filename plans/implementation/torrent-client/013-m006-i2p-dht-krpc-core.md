@@ -1,8 +1,11 @@
 # Torrent Client M006-A — I2P DHT KRPC Core
 
-Status: active
+Status: closed
 
 Date: 2026-10-10
+
+Closure: `plans/closure/torrent-client/013-m006a-status.md`.
+Implementation: `abe4fbb967aeefef160b249a564dfe0a40ae7eb6`.
 
 Parent roadmap phase: future M006 advanced I2P discovery.
 
@@ -286,6 +289,7 @@ or if the core requires router-specific types.
 
 ## 13. Closure evidence
 
-Create `plans/closure/torrent-client/013-m006a-status.md` with protocol dossier
-pins, format vectors, resource-ceiling table, routing/token properties,
-persistence crash tests, fuzz results, and M006-B readiness audit.
+Closure evidence, protocol dossier pins, format vectors, resource-ceiling
+table, routing/token properties, persistence crash tests, fuzz results, and the
+M006-B readiness audit are recorded in
+`plans/closure/torrent-client/013-m006a-status.md`.

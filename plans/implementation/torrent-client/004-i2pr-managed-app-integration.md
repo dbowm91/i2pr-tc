@@ -18,7 +18,7 @@ package-policy work has advanced:
 This umbrella no longer serves as a single coding-agent handoff. Execute:
 
 - M004-A / Plan 009 — package + lifecycle bootstrap, blocked on 388;
-- M004-B / Plan 010 — private SAM 3.3, blocked on A + SAM/368 + 388;
+- M004-B / Plan 010 — private SAM 3.3, blocked on A + 388; SAM/368 closeout awaits integration to upstream main;
 - M004-C / Plan 011 — private data + persistent Destination + Secured, blocked
   on A/B + 385/386/388;
 - M004-D / Plan 012 — host-owned Transmission ingress, blocked on A + 387/388.
