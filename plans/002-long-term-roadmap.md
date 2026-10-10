@@ -48,8 +48,8 @@ Plan: `plans/implementation/torrent-client/005-router-update-artifact-transport.
 
 The SAM/datagram prerequisite is now stable on the application side. M006 is split into:
 
-- M006-A `013-m006-i2p-dht-krpc-core.md` — ready now; runtime-neutral I2P KRPC, secure node IDs, routing, tokens, tracker state, persistence;
-- M006-B `014-m006-i2p-dht-transport-integration.md` — binds protocol 17/18 children to the same Destination and integrates DHT peer discovery.
+- M006-A `013-m006-i2p-dht-krpc-core.md` — closed; runtime-neutral I2P KRPC, secure node IDs, routing, tokens, tracker state, persistence;
+- M006-B `014-m006-i2p-dht-transport-integration.md` — ready; binds protocol 17/18 children to the same Destination and integrates DHT peer discovery.
 
 Datagram/UDP tracker support and BitTorrent v2/hybrid remain later evaluations rather than being folded into the first DHT implementation.
 

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bencode;
+pub mod dht;
 pub mod extension;
 pub mod magnet;
 pub mod metainfo;

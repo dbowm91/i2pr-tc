@@ -69,27 +69,45 @@ acquisition over `ut_metadata` verifies and promotes the `info` dictionary;
 for self-filtering after C003. `STREAM FORWARD` is not part of the managed
 profile.
 
+M006-A closed with the runtime-neutral DHT state core in
+`i2pr-tc-core::dht`: strict bounded KRPC, I2P compact node/peer forms, secure
+node IDs, routing and transaction state, rotating announce tokens, local peer
+tracking, and a versioned bootstrap snapshot persisted atomically by
+`i2pr-tc-storage`. It performs no network I/O. M006-B owns binding those state
+transitions to the SAM DATAGRAM/RAW children and qualifying live traffic. The
+bounded transport responder and deterministic two-node path are implemented;
+live qualification remains operationally blocked.
+`DhtResponder::run` refuses to start unless the core's local hash and query
+port match the router-confirmed SAM identity; the caller supplies
+unpredictable transaction IDs and the token secret. The responder owns one
+signed receive worker, one raw receive/dispatch worker, and one bounded
+maintenance worker. Its API merges get_peers results into shared
+tracker/PEX/DHT provenance and leaves refresh scheduling to the torrent owner.
+Verified compact-node Destinations are cached only as positive results, capped
+at 256 entries, expired after ten minutes, and invalidated on SAM generation
+change. The current repository has no networked per-torrent actor; callers own
+bounded traversal/announce timing and withdraw DHT provenance on stop, while
+remote announce records expire under the deployed profile.
+
 ## Not yet implemented
 
 C003 corrected the SAM lifecycle and identity model and qualified one shared
 Destination across STREAM, DATAGRAM, and RAW against an in-memory SAM 3.3
-service, with the STREAM child additionally qualified against a live i2pd
-bridge. Its production qualification over the managed-app seam is hard-blocked
-on i2pr Plan 368, which extends i2pr's closed SAM 3.1 product with the required
-SAM 3.3 PRIMARY/subsession profile over the existing Streaming and
-protocol-17/protocol-18 data planes. Plan 368 is registered `ready` upstream and
-not implemented.
+service, with the STREAM child additionally qualified against live routers.
+Its production qualification over the managed-app seam still needs M004-B.
+The i2pr workspace has a SAM/368 implementation and formal closeout, but those
+changes are not yet integrated to upstream main.
 
-M004 remains blocked behind Plan 368 plus AppManager/process ownership, OS
-containment, host-owned local ingress, and private persistent-data/key
-semantics.
+M004 remains blocked on the external app SDK/package builder, private app data,
+Linux Secured containment, and host-owned local ingress. Package/process
+ownership foundations exist upstream.
 
 M005 requires router-owned ReleaseTarget, private invocation, and
 staging/export contracts, which do not exist upstream.
 
 ## Resource model
 
-Current bounds cover encoded metainfo, bencode nesting/items/strings, file and announce counts/lengths, path component lengths/collisions, piece length, resume file size at load, peer-wire frame size at decode, PEX record counts, magnet URI/name/tracker bounds, metadata extension framing, event retention/batch size, catalog records, and scheduler in-flight requests. Storage operations serialize and support cooperative cancellation between files/pieces. Network and RPC bounds belong to their later milestones.
+Current bounds cover encoded metainfo, bencode nesting/items/strings, file and announce counts/lengths, path component lengths/collisions, piece length, resume file size at load, peer-wire frame size at decode, PEX record counts, magnet URI/name/tracker bounds, metadata extension framing, event retention/batch size, catalog records, scheduler in-flight requests, and M006-A's closed DHT core KRPC/routing/transaction/token/tracker/persistence state. M006-B additionally caps network datagrams at 32 KiB, pending raw replies at 256, a traversal at 32 nodes, per-request timeouts at 120 seconds, token-cache entries at 256, and shared peer-source/backoff entries at 2,000. Live network behavior belongs to M006-B.
 
 ## Verification seams
 

@@ -1,6 +1,6 @@
 # Torrent Client Subsystem Roadmap
 
-Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed; M006-A ready; M004 decomposed into blocked A–D slices; M005 blocked
+Status: active; M001/M003 closed, historical M002 conditionally closed, C001/C002 closed; C003 conditionally closed; M006-A closed; M006-B conditionally closed; M004 decomposed into blocked A–D slices; M005 blocked
 
 Canonical authority:
 
@@ -48,12 +48,12 @@ M001 core/storage (closed)
   +-> M003 Transmission RPC (closed)
   +-> M002 -> C001 -> C002 -> C003 (conditionally closed)
                               |
-                              +-> M006-A KRPC core (ready)
-                              |      -> M006-B DHT transport/integration (blocked)
+                              +-> M006-A KRPC core (closed)
+                              |      -> M006-B DHT transport/integration (conditionally closed)
                               |
                               +-> M004 umbrella
                                    +-> M004-A (009) blocked on upstream 388
-                                   +-> M004-B (010) blocked on A + SAM/368 + 388
+                              +-> M004-B (010) blocked on A + 388 (upstream SAM/368 closeout awaits integration to main)
                                    +-> M004-C (011) blocked on A/B + 385 + 386 + 388
                                    +-> M004-D (012) blocked on A + 387 + 388
                                           |
@@ -228,7 +228,7 @@ claim.
 
 Plan: `plans/implementation/torrent-client/010-m004b-managed-sam33-capability-composition.md`
 
-Status: blocked on M004-A, SAM/368, and Plan 388.
+Status: blocked on M004-A and Plan 388; upstream SAM/368 closeout is prepared but awaits integration to main.
 
 Maps C003's raw connection factory onto app logical SAM streams and discharges
 C003 criterion 8 through i2pr's private app gateway.
@@ -276,7 +276,7 @@ owners.
 
 ### M006-A — KRPC core
 
-Status: ready.
+Status: closed. Closure evidence: `plans/closure/torrent-client/013-m006a-status.md`.
 
 Plan: `plans/implementation/torrent-client/013-m006-i2p-dht-krpc-core.md`
 
@@ -287,15 +287,20 @@ router dependency and may proceed immediately.
 
 ### M006-B — transport + torrent integration
 
-Status: blocked on M006-A.
+Status: conditionally closed. Hard dependencies M006-A and retained C003
+transport are met. The deterministic implementation is complete. Working
+transit and a reachable independent DHT peer remain operational dependencies
+for live Java DHT traffic evidence; that row is not claimed as passed.
 
 Plan: `plans/implementation/torrent-client/014-m006-i2p-dht-transport-integration.md`
 
 Binds the core to C003 protocol-17/18 children under the same Destination,
-resolves compact hashes through verified b32 lookup, merges DHT provenance into
-tracker/PEX peer sources, and owns live qualification. Java I2P 2.13.0 is a
-compatible SAM transport; i2pd 2.61.0 is recorded as incompatible with
-DATAGRAM/RAW subsessions. i2pr-managed qualification follows SAM/368 + M004-B.
+resolves compact hashes through verified b32 lookup and a bounded positive
+cache scoped to SAM generation, merges DHT provenance into tracker/PEX peer
+sources, and owns live qualification. The transport follows the current Java
+I2P/SAM 3.3 profile; i2pd is not an oracle for latest SAM behavior.
+i2pr-managed qualification follows SAM/368 + M004-B before any managed-product
+DHT claim.
 
 Datagram tracker support remains a later phase; do not conflate it with the
 first KRPC implementation.

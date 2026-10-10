@@ -12,6 +12,7 @@
 //! channels attached to it. See [`sam`] for the qualified wire behaviour and the
 //! ownership rules.
 
+pub mod dht_transport;
 pub mod identity;
 pub mod metadata;
 pub mod peer;
@@ -65,6 +66,13 @@ pub trait I2pSession: Send + Sync {
     /// invented value would be trusted by every consumer that filters itself
     /// out of PEX, announces, and self-connection checks.
     fn local_peer_hash(&self) -> Result<[u8; 32], TransportError>;
+
+    /// Monotonic identity/session generation used to scope cached router
+    /// lookups. Implementations without session replacement may keep the
+    /// default generation; SAM-backed clients expose their live generation.
+    fn generation(&self) -> u64 {
+        0
+    }
 
     async fn lookup(&self, name: &str) -> Result<identity::Destination, TransportError>;
 

@@ -381,7 +381,7 @@ pub enum SamReplyKind {
 /// This vocabulary is deliberately transport-neutral: adding a datagram form
 /// later is a new variant and a new encoder, never a change to the primary
 /// session owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SamChannelKind {
     /// Reliable, ordered, bidirectional virtual streams (I2CP protocol 6).
     Stream,
@@ -922,7 +922,7 @@ pub fn encode_session_create_primary(
 }
 
 /// Ports one child channel owns on the shared Destination.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SamChannelConfig {
     /// Local I2P port this client sends from.
     pub from_port: u16,
@@ -1480,7 +1480,9 @@ pub struct SamClient<F: SamConnectionFactory> {
     state: Arc<Mutex<PrimaryState>>,
     generation: Arc<std::sync::atomic::AtomicU64>,
     child_counters: [std::sync::atomic::AtomicU64; 3],
-    channel_cache: Mutex<std::collections::HashMap<u64, SamChannel>>,
+    channel_cache:
+        Mutex<std::collections::HashMap<(u64, SamChannelKind), (SamChannelConfig, SamChannel)>>,
+    channel_gate: tokio::sync::Mutex<()>,
 }
 
 impl<F: SamConnectionFactory> SamClient<F> {
@@ -1513,6 +1515,7 @@ impl<F: SamConnectionFactory> SamClient<F> {
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             child_counters: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
             channel_cache: Mutex::new(std::collections::HashMap::new()),
+            channel_gate: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -1801,6 +1804,7 @@ impl<F: SamConnectionFactory> SamClient<F> {
         config: SamChannelConfig,
         cancellation: &Cancellation,
     ) -> Result<SamChannel, TransportError> {
+        let _gate = self.channel_gate.lock().await;
         let generation = self.require_live_generation()?;
         let id = self.next_child_id(kind);
         let command = encode_session_add(kind, &id, config)?;
@@ -1866,6 +1870,9 @@ impl<F: SamConnectionFactory> SamClient<F> {
             && live.generation == channel.generation
         {
             live.channels = live.channels.saturating_sub(1);
+        }
+        if let Ok(mut cache) = self.channel_cache.lock() {
+            cache.retain(|_, (_, cached)| cached.id() != channel.id());
         }
         Ok(())
     }
@@ -2190,27 +2197,64 @@ impl<F: SamConnectionFactory> SamClient<F> {
         &self,
         cancellation: &Cancellation,
     ) -> Result<SamChannel, TransportError> {
+        self.cached_channel(
+            SamChannelKind::Stream,
+            SamChannelConfig::STREAM,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Returns the protocol-17 child for these fixed I2P ports, creating it at
+    /// most once for this primary generation.
+    pub async fn datagram_channel(
+        &self,
+        config: SamChannelConfig,
+        cancellation: &Cancellation,
+    ) -> Result<SamChannel, TransportError> {
+        self.cached_channel(SamChannelKind::RepliableDatagram, config, cancellation)
+            .await
+    }
+
+    /// Returns the protocol-18 child for these fixed I2P ports, creating it at
+    /// most once for this primary generation.
+    pub async fn raw_channel(
+        &self,
+        config: SamChannelConfig,
+        cancellation: &Cancellation,
+    ) -> Result<SamChannel, TransportError> {
+        self.cached_channel(SamChannelKind::RawDatagram, config, cancellation)
+            .await
+    }
+
+    async fn cached_channel(
+        &self,
+        kind: SamChannelKind,
+        config: SamChannelConfig,
+        cancellation: &Cancellation,
+    ) -> Result<SamChannel, TransportError> {
         let generation = self.require_live_generation()?;
         if let Some(channel) = self
             .channel_cache
             .lock()
             .ok()
-            .and_then(|cache| cache.get(&generation).cloned())
+            .and_then(|cache| cache.get(&(generation, kind)).cloned())
         {
-            return Ok(channel);
+            return if channel.0 == config {
+                Ok(channel.1)
+            } else {
+                Err(TransportError::Address)
+            };
         }
-        let channel = self
-            .add_channel(
-                SamChannelKind::Stream,
-                SamChannelConfig::STREAM,
-                cancellation,
-            )
-            .await?;
+        let channel = self.add_channel(kind, config, cancellation).await?;
+        if channel.generation() != generation {
+            return Err(SamError::StaleGeneration.into());
+        }
         if let Ok(mut cache) = self.channel_cache.lock() {
             // A new generation is a new identity, so a cached channel from an
             // older one is dropped rather than reused.
-            cache.retain(|_, cached| cached.id() != channel.id());
-            cache.insert(generation, channel.clone());
+            cache.retain(|(cached_generation, _), _| *cached_generation == generation);
+            cache.insert((generation, kind), (config, channel.clone()));
         }
         Ok(channel)
     }
@@ -2597,6 +2641,10 @@ impl<F: SamConnectionFactory> I2pSession for SamClient<F> {
     /// The router-confirmed local Destination hash, or a typed not-ready error.
     fn local_peer_hash(&self) -> Result<[u8; 32], TransportError> {
         self.local_destination_hash()
+    }
+
+    fn generation(&self) -> u64 {
+        SamClient::generation(self)
     }
 
     async fn lookup(&self, name: &str) -> Result<identity::Destination, TransportError> {

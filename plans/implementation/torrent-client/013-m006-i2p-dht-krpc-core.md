@@ -1,8 +1,11 @@
 # Torrent Client M006-A — I2P DHT KRPC Core
 
-Status: ready
+Status: closed
 
-Date: 2026-10-09
+Date: 2026-10-10
+
+Closure: `plans/closure/torrent-client/013-m006a-status.md`.
+Implementation: `abe4fbb967aeefef160b249a564dfe0a40ae7eb6`.
 
 Parent roadmap phase: future M006 advanced I2P discovery.
 
@@ -60,6 +63,55 @@ Freeze these I2P-specific differences as wire invariants:
 
 Confirm exact current I2PSnark behavior during WP1 and record any divergence
 rather than assuming standard BEP-5 UDP encodings.
+
+### WP1 protocol freeze — 2026-10-10
+
+The I2PSnark source was read at repository revision
+`37039e6594f1372368f0c1cf8258cdaf805a7fb4` (source paths under
+`apps/i2psnark/java/src/org/klomp/snark/dht/`; inspection only, no source is
+copied). BEP 5 was read at accepted revision
+`aa944d9e2faf989cbb4b1bad5ec130b9f22631d9`.
+
+- I2P peers are exactly 32-byte Destination hashes. Compact nodes are exactly
+  54 bytes: 20-byte NID, 32-byte Destination hash, and a big-endian query port
+  in `1..=65534`.
+- Secure NIDs bind the first four bytes to the Destination hash. Bytes 4 and 5
+  XOR the corresponding Destination-hash bytes with the query port's high and
+  low bytes. The remaining 14 bytes come from caller-supplied CSPRNG output.
+- The I2PSnark query client caches a received get_peers token by remote NID
+  alone; its source explicitly leaves one-infohash binding unresolved. The
+  outbound cache belongs to M006-B. The server-side core binds authorization to
+  both Destination hash and infohash, rejects cross-torrent replay, and expires
+  grants. `announce_peer` travels over the raw response channel without a
+  trusted signed sender identity, so the token carries the requester hash and
+  lets the server recover it. The `id` query field on announce is not identity
+  authority.
+- The current I2PSnark server issues random eight-byte tokens and stores the
+  token-to-requester mapping; it accepts opaque tokens up to 64 bytes and
+  expires issued tokens after ten minutes. The plan's rotating-secret token
+  design is a deliberate strengthening behind that opaque wire field. The
+  implementation uses a 64-byte token containing a four-byte issue time, the
+  32-byte requester hash, and a 28-byte truncated HMAC-SHA256. It accepts
+  tokens for at most eight minutes and uses current/previous rotating secrets.
+  HMAC uses `hmac` with existing `sha2`; tag comparison uses
+  `subtle::ConstantTimeEq`; the current and previous key bytes are zeroized on
+  drop with `zeroize`. Secret bytes are supplied by the caller.
+- I2PSnark sends optional `noseed=1` on get_peers and `seed=0|1` on
+  announce_peer; its server accepts seed as optional. The announce `port` is
+  explicitly ignored for I2P peers. The codec preserves seed filtering and
+  tolerates a missing seed flag; it validates the ignored port only as u16.
+- Queries use the signed/repliable channel. Responses and errors, plus
+  announce_peer, use the raw response channel. find_node returns at most K=8
+  compact nodes. I2PSnark accepts transaction IDs up to 16 bytes.
+- I2PSnark reference ceilings include 799 known nodes, 800 tracked torrents,
+  150 normally retained peers per torrent (300 temporary insertion ceiling),
+  2,000 total peers, 5,000 outgoing tokens, ten-minute issued-token expiry,
+  and eight-minute inbound-token use. M006-A will keep explicit equal-or-
+  stricter local caps and must not import its GPL implementation.
+
+These differences from generic BEP 5 are recorded as the I2P profile. The
+reference implementation is behavioral evidence only; the Rust codec and
+state machines are independently authored.
 
 ## 3. Secure node id
 
@@ -182,6 +234,22 @@ Parsing and lookup must be linear or bounded by those ceilings.
 One unauthenticated query must not force expensive Destination lookup or
 unbounded response amplification in the core.
 
+Implementation ceilings (all protocol time values are injected seconds):
+
+| State/input | Bound |
+|---|---:|
+| KRPC input/output | 65,536 bytes |
+| decoded bencode values / nesting | 256 values / depth 8 |
+| transaction ID | 1–16 bytes |
+| compact nodes per reply / peers per reply | 8 / 200 |
+| routing buckets / known nodes | 160 / 799 |
+| pending transactions | 256 |
+| announce token / retained secret generations | 64 bytes / 2 |
+| tracked infohashes / peers per infohash / total peers | 800 / 150 / 2,000 |
+| failure state | one saturating counter per retained routing node; 799 max |
+| blacklist | none retained by the core |
+| persisted bootstrap representation | 43,156 bytes |
+
 ## 10. Work packages
 
 WP1 — freeze independent protocol dossier from current I2PSnark + BEP 5.
@@ -221,6 +289,7 @@ or if the core requires router-specific types.
 
 ## 13. Closure evidence
 
-Create `plans/closure/torrent-client/013-m006a-status.md` with protocol dossier
-pins, format vectors, resource-ceiling table, routing/token properties,
-persistence crash tests, fuzz results, and M006-B readiness audit.
+Closure evidence, protocol dossier pins, format vectors, resource-ceiling
+table, routing/token properties, persistence crash tests, fuzz results, and the
+M006-B readiness audit are recorded in
+`plans/closure/torrent-client/013-m006a-status.md`.

@@ -1,6 +1,10 @@
 //! Filesystem and resume primitives rooted in an explicitly authorized directory.
 #![forbid(unsafe_code)]
-use i2pr_tc_core::{InfoHashV1, metainfo::TorrentFile};
+use i2pr_tc_core::{
+    InfoHashV1,
+    dht::{BootstrapSnapshot, DhtError, MAX_PERSISTED_BYTES},
+    metainfo::TorrentFile,
+};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
@@ -51,6 +55,8 @@ pub enum StorageError {
     Backpressure,
     #[error("storage operation was cancelled")]
     Cancelled,
+    #[error(transparent)]
+    Dht(#[from] DhtError),
 }
 
 #[derive(Clone, Default)]
@@ -79,6 +85,40 @@ impl Storage {
     }
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    /// Atomically replace the restart-useful DHT routing bootstrap snapshot.
+    /// Transaction and announce-token state is not representable in this file.
+    pub fn save_dht_bootstrap(&self, snapshot: &BootstrapSnapshot) -> Result<(), StorageError> {
+        let path = self.root.join("dht-bootstrap.bin");
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(StorageError::Path);
+        }
+        let encoded = snapshot.encode()?;
+        atomic_write(&path, &encoded)
+    }
+
+    /// Read the bounded versioned bootstrap snapshot from the storage root.
+    pub fn load_dht_bootstrap(&self) -> Result<Option<BootstrapSnapshot>, StorageError> {
+        let path = self.root.join("dht-bootstrap.bin");
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() > MAX_PERSISTED_BYTES as u64
+        {
+            return Err(StorageError::Path);
+        }
+        let file = File::open(path)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take((MAX_PERSISTED_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_PERSISTED_BYTES {
+            return Err(StorageError::InvalidInput);
+        }
+        Ok(Some(BootstrapSnapshot::decode(&bytes)?))
     }
     fn safe_path(&self, parts: &[String]) -> Result<PathBuf, StorageError> {
         if parts.is_empty() {
@@ -976,6 +1016,39 @@ mod tests {
 
         atomic_write(&path, b"new-valid").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"new-valid");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dht_bootstrap_snapshot_is_bounded_rooted_and_atomically_replaced() {
+        use i2pr_tc_core::dht::{CompactNode, DestinationHash, NodeId};
+        let root = temp_root();
+        let storage = Storage::open(&root).unwrap();
+        assert!(storage.load_dht_bootstrap().unwrap().is_none());
+        let destination = DestinationHash([7; 32]);
+        let node = CompactNode {
+            id: NodeId::from_destination(destination, 1234, [9; 14]).unwrap(),
+            destination,
+            query_port: 1234,
+        };
+        let first = BootstrapSnapshot { nodes: vec![node] };
+        storage.save_dht_bootstrap(&first).unwrap();
+        assert_eq!(storage.load_dht_bootstrap().unwrap(), Some(first.clone()));
+        let second = BootstrapSnapshot { nodes: vec![] };
+        let interrupted = atomic_write_with_hook(
+            &root.join("dht-bootstrap.bin"),
+            &second.encode().unwrap(),
+            &mut || {
+                Err(std::io::Error::other(
+                    "simulated interrupted DHT snapshot write",
+                ))
+            },
+        );
+        assert!(matches!(interrupted, Err(StorageError::Io(_))));
+        assert_eq!(storage.load_dht_bootstrap().unwrap(), Some(first));
+        storage.save_dht_bootstrap(&second).unwrap();
+        assert_eq!(storage.load_dht_bootstrap().unwrap(), Some(second));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
         let _ = fs::remove_dir_all(root);
     }
 
